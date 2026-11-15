@@ -35,7 +35,8 @@ function warehouseOptionLabel(w: ApiWarehouse): string {
 }
 
 function rollDisplayLabel(r: FabricRollDto): string {
-  const parts = [r.barcode];
+  // لا يُدرَج الباركود هنا — يظهر بعموده المستقل أصلاً بنفس الصف.
+  const parts: string[] = [];
   if (r.item_name) parts.push(r.item_name);
   if (r.color_name_ar) parts.push(r.color_name_ar);
   return parts.join(' — ');
