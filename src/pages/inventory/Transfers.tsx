@@ -1,13 +1,18 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { CheckCircle2, Loader2, Plus, QrCode, Search, ArrowRight, X } from 'lucide-react';
-import { listFabricRolls, type FabricRollDto } from '../../lib/api/fabricRollsApi';
+import type { FabricRollDto } from '../../lib/api/fabricRollsApi';
+import { TransferFabricSelection } from '../../components/TransferFabricSelection';
+import { eligibleTransferRoll } from '../../lib/inventory/transferSelection';
 import { listLocations, listWarehouses, type ApiWarehouse, type ApiWarehouseLocation } from '../../lib/api/warehousesApi';
 import {
   listInventoryTransfers,
   createInventoryTransfer,
   confirmInventoryTransfer,
   cancelInventoryTransfer,
+  getInventoryTransfer,
+  listEligibleTransferRolls,
+  type InventoryTransferDetail,
   type InventoryTransferRow,
 } from '../../lib/api/inventoryTransfersApi';
 import { ApiRequestError } from '../../lib/api/client';
@@ -41,8 +46,7 @@ function findRollInResults(code: string, rolls: FabricRollDto[]): FabricRollDto 
   if (!norm) return undefined;
   return (
     rolls.find((r) => r.barcode.toLowerCase() === norm) ??
-    rolls.find((r) => r.roll_no?.toLowerCase() === norm) ??
-    rolls[0]
+    rolls.find((r) => r.roll_no?.toLowerCase() === norm)
   );
 }
 
@@ -75,6 +79,12 @@ export const Transfers = () => {
   const [bus, setBus] = useState({ list: false, create: false, act: null as string | null });
   const [err, setErr] = useState<string | null>(null);
   const [scanHint, setScanHint] = useState<string | null>(null);
+  const [rollRefresh, setRollRefresh] = useState(0);
+  const [review, setReview] = useState<InventoryTransferDetail | null>(null);
+  const operationLock = useRef(false);
+  const pendingRequest = useRef<{ signature: string; key: string } | null>(null);
+  const sourceScope = useRef('');
+  sourceScope.current = `${fromWarehouseId}:${fromLocationId}`;
 
   const selectedIds = useMemo(() => new Set(selectedRolls.map((r) => r.id)), [selectedRolls]);
 
@@ -130,7 +140,6 @@ export const Transfers = () => {
       .then((locs) => {
         if (!cancelled) {
           setFromLocations(locs);
-          setFromLocationId('');
         }
       })
       .catch(() => {
@@ -144,10 +153,9 @@ export const Transfers = () => {
   useEffect(() => {
     if (!fromWarehouseId) return;
     let cancelled = false;
-    void listFabricRolls({
+    void listEligibleTransferRolls({
       warehouseId: fromWarehouseId,
       locationId: fromLocationId || undefined,
-      onlyAvailable: true,
       page: 1,
       pageSize: 1,
     })
@@ -163,7 +171,7 @@ export const Transfers = () => {
     return () => {
       cancelled = true;
     };
-  }, [fromWarehouseId, fromLocationId]);
+  }, [fromWarehouseId, fromLocationId, rollRefresh]);
 
   useEffect(() => {
     const t = window.setTimeout(() => setRollSearchDebounced(rollSearch.trim()), 350);
@@ -178,15 +186,12 @@ export const Transfers = () => {
     }
     let cancelled = false;
     setSearchLoading(true);
-    void listFabricRolls({
+    void listEligibleTransferRolls({
       warehouseId: fromWarehouseId,
       locationId: fromLocationId || undefined,
       search: rollSearchDebounced,
-      onlyAvailable: true,
       page: 1,
       pageSize: 50,
-      sortBy: 'barcode',
-      sortDir: 'asc',
     })
       .then((res) => {
         if (cancelled) return;
@@ -205,9 +210,12 @@ export const Transfers = () => {
     return () => {
       cancelled = true;
     };
-  }, [fromWarehouseId, fromLocationId, rollSearchDebounced]);
+  }, [fromWarehouseId, fromLocationId, rollSearchDebounced, rollRefresh]);
 
   useEffect(() => {
+    let cancelled = false;
+    setToLocations([]);
+    setToLocationId('');
     if (!toWarehouseId) {
       setToLocations([]);
       setToLocationId('');
@@ -216,28 +224,33 @@ export const Transfers = () => {
     void (async () => {
       try {
         const locs = await listLocations(toWarehouseId);
+        if (cancelled) return;
         setToLocations(locs);
         setToLocationId('');
       } catch {
-        setToLocations([]);
+        if (!cancelled) setToLocations([]);
       }
     })();
+    return () => { cancelled = true; };
   }, [toWarehouseId]);
 
   const addRoll = useCallback((roll: FabricRollDto) => {
+    if (!eligibleTransferRoll(roll, fromWarehouseId, fromLocationId)) { setErr(t('errors.rollNotFound')); return; }
     setSelectedRolls((prev) => {
       if (prev.some((r) => r.id === roll.id)) return prev;
       return [...prev, roll];
     });
     setScanHint(t('scan.addedPrefix', { barcode: roll.barcode }));
     setErr(null);
-  }, [t]);
+  }, [t, fromWarehouseId, fromLocationId]);
 
   const removeRoll = (id: string) => {
     setSelectedRolls((prev) => prev.filter((r) => r.id !== id));
   };
 
   const handleScanCommit = async () => {
+    if (scanBusy || operationLock.current) return;
+    const requestedScope = sourceScope.current;
     const code = scanInput.trim();
     if (!code) return;
     if (!fromWarehouseId) {
@@ -247,14 +260,14 @@ export const Transfers = () => {
     setScanBusy(true);
     setScanHint(null);
     try {
-      const res = await listFabricRolls({
+      const res = await listEligibleTransferRolls({
         warehouseId: fromWarehouseId,
         locationId: fromLocationId || undefined,
-        search: code,
-        onlyAvailable: true,
+        barcode: code,
         pageSize: 25,
         page: 1,
       });
+      if (requestedScope !== sourceScope.current) return;
       const roll = findRollInResults(code, res.data);
       if (!roll) {
         setErr(t('errors.rollNotFound'));
@@ -277,17 +290,18 @@ export const Transfers = () => {
   };
 
   const destinationWarehouses = useMemo(
-    () => warehouses.filter((w) => w.id !== fromWarehouseId || fromLocations.length > 0),
-    [warehouses, fromWarehouseId, fromLocations.length],
+    () => warehouses.filter((w) => w.id !== fromWarehouseId),
+    [warehouses, fromWarehouseId],
   );
 
   const handleCreate = async () => {
+    if (operationLock.current) return;
     setErr(null);
     if (!fromWarehouseId || !toWarehouseId) {
       setErr(t('errors.chooseSourceAndDestination'));
       return;
     }
-    if (fromWarehouseId === toWarehouseId && (fromLocationId || '') === (toLocationId || '')) {
+    if (fromWarehouseId === toWarehouseId) {
       setErr(t('errors.sourceDestinationSame'));
       return;
     }
@@ -295,16 +309,16 @@ export const Transfers = () => {
       setErr(t('errors.addAtLeastOneRoll'));
       return;
     }
+    const payload = { fromWarehouseId, fromLocationId: fromLocationId || null, toWarehouseId, toLocationId: toLocationId || null,
+      notes: notes.trim() || null, lines: [...selectedRolls].sort((a,b) => a.id.localeCompare(b.id)).map((r) => ({ fabricRollId: r.id, quantity: 1 })) };
+    const signature = JSON.stringify(payload);
+    const pending = pendingRequest.current?.signature === signature ? pendingRequest.current : { signature, key: crypto.randomUUID() };
+    pendingRequest.current = pending;
+    operationLock.current = true;
     setBus((b) => ({ ...b, create: true }));
     try {
-      await createInventoryTransfer({
-        fromWarehouseId,
-        fromLocationId: fromLocationId || null,
-        toWarehouseId,
-        toLocationId: toLocationId || null,
-        notes: notes.trim() || null,
-        lines: selectedRolls.map((r) => ({ fabricRollId: r.id, quantity: 1 })),
-      });
+      await createInventoryTransfer({ ...payload, clientRequestId: pending.key });
+      pendingRequest.current = null;
       setNotes('');
       setSelectedRolls([]);
       setScanInput('');
@@ -313,24 +327,38 @@ export const Transfers = () => {
     } catch (e) {
       setErr(e instanceof ApiRequestError ? e.message : t('errors.createFailed'));
     } finally {
+      operationLock.current = false;
       setBus((b) => ({ ...b, create: false }));
     }
   };
 
-  const handleConfirm = async (id: string) => {
+  const handleConfirm = async (id: string, approved = false) => {
+    if (operationLock.current) return;
+    operationLock.current = true;
     setErr(null);
     setBus((b) => ({ ...b, act: id }));
     try {
-      await confirmInventoryTransfer(id);
+      if (!approved) {
+        const result = await getInventoryTransfer(id);
+        setReview(result.data);
+        return;
+      }
+      if (review?.id !== id) return;
+      await confirmInventoryTransfer(id, review.updated_at);
+      setReview(null);
+      setRollRefresh((value) => value + 1);
       await loadList();
     } catch (e) {
       setErr(e instanceof ApiRequestError ? e.message : t('errors.confirmFailed'));
     } finally {
+      operationLock.current = false;
       setBus((b) => ({ ...b, act: null }));
     }
   };
 
   const handleCancel = async (id: string) => {
+    if (operationLock.current) return;
+    operationLock.current = true;
     setErr(null);
     setBus((b) => ({ ...b, act: id }));
     try {
@@ -339,6 +367,7 @@ export const Transfers = () => {
     } catch (e) {
       setErr(e instanceof ApiRequestError ? e.message : t('errors.cancelFailed'));
     } finally {
+      operationLock.current = false;
       setBus((b) => ({ ...b, act: null }));
     }
   };
@@ -361,13 +390,14 @@ export const Transfers = () => {
           <h3 className="text-lg font-bold text-slate-900">{t('form.newTransferTitle')}</h3>
         </div>
 
-        <div className="p-6 space-y-6">
+        <fieldset disabled={bus.create || bus.act !== null || Boolean(review)} className="p-6 space-y-6">
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
             <div className="space-y-2">
               <label className="block text-sm font-medium text-slate-700">{t('form.sourceWarehouseLabel')}</label>
               <select
+                data-testid="transfer-source"
                 value={fromWarehouseId}
-                onChange={(e) => setFromWarehouseId(e.target.value)}
+                onChange={(e) => { setSelectedRolls([]); setFromLocationId(''); setFromWarehouseId(e.target.value); }}
                 className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
               >
                 <option value="">{t('form.chooseOption')}</option>
@@ -383,8 +413,9 @@ export const Transfers = () => {
               <div className="space-y-2">
                 <label className="block text-sm font-medium text-slate-700">{t('form.sourceLocationLabel')}</label>
                 <select
+                  data-testid="transfer-source-location"
                   value={fromLocationId}
-                  onChange={(e) => setFromLocationId(e.target.value)}
+                  onChange={(e) => { setSelectedRolls([]); setFromLocationId(e.target.value); }}
                   className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
                 >
                   <option value="">{t('form.allLocationsOption')}</option>
@@ -402,6 +433,7 @@ export const Transfers = () => {
             <div className="space-y-2">
               <label className="block text-sm font-medium text-slate-700">{t('form.destinationWarehouseLabel')}</label>
               <select
+                data-testid="transfer-destination"
                 value={toWarehouseId}
                 onChange={(e) => setToWarehouseId(e.target.value)}
                 disabled={!fromWarehouseId}
@@ -465,6 +497,7 @@ export const Transfers = () => {
                 <div className="flex gap-2">
                   <input
                     ref={scanRef}
+                    data-testid="transfer-barcode"
                     type="text"
                     value={scanInput}
                     onChange={(e) => setScanInput(e.target.value)}
@@ -502,6 +535,7 @@ export const Transfers = () => {
                   <input
                     type="text"
                     value={rollSearch}
+                    data-testid="transfer-search"
                     onChange={(e) => setRollSearch(e.target.value)}
                     disabled={!fromWarehouseId}
                     placeholder={fromWarehouseId ? t('form.searchPlaceholderReady') : t('form.searchPlaceholderChooseSource')}
@@ -576,6 +610,9 @@ export const Transfers = () => {
               </p>
             ) : null}
 
+            <TransferFabricSelection warehouseId={fromWarehouseId} locationId={fromLocationId} selected={selectedRolls}
+              onChange={setSelectedRolls} disabled={bus.create || bus.act !== null} revision={rollRefresh} />
+
             {selectedRolls.length > 0 ? (
               <div className="border border-indigo-100 rounded-lg overflow-hidden">
                 <div className="px-3 py-2 bg-indigo-50 border-b border-indigo-100 text-xs font-medium text-indigo-900">
@@ -632,6 +669,7 @@ export const Transfers = () => {
             <button
               type="button"
               onClick={() => void handleCreate()}
+              data-testid="transfer-save"
               disabled={bus.create || !fromWarehouseId || !toWarehouseId}
               className="md:min-w-[200px] bg-indigo-600 text-white py-3 px-6 rounded-lg flex items-center justify-center gap-2 hover:bg-indigo-700 transition font-medium disabled:opacity-60"
             >
@@ -639,14 +677,25 @@ export const Transfers = () => {
               {t('form.saveDraftButton')}
             </button>
           </div>
-        </div>
+        </fieldset>
       </div>
+
+      {review && <div role="dialog" aria-modal="true" className="fixed inset-0 z-50 overflow-y-auto bg-black/40 p-4">
+        <div className="mx-auto max-w-6xl space-y-3 rounded-xl bg-white p-5">
+          <h3 className="font-bold">{t('bulk.review')} — {review.transfer_no}</h3>
+          <TransferFabricSelection warehouseId={review.from_warehouse_id} locationId={review.from_location_id || ''}
+            selected={review.lines.map((line) => line.roll)} onChange={() => {}} disabled revision={rollRefresh} />
+          <button type="button" data-testid="transfer-confirm-reviewed" disabled={bus.act !== null} onClick={() => void handleConfirm(review.id, true)} className="rounded bg-emerald-600 px-4 py-2 text-white">{t('list.confirmButton')}</button>
+          <button type="button" disabled={bus.act !== null} onClick={() => setReview(null)} className="mx-3 rounded border p-2">{t('bulk.close')}</button>
+        </div>
+      </div>}
 
       <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden flex flex-col">
         <div className="p-4 border-b border-slate-200 flex items-center gap-3 bg-slate-50 flex-wrap">
           <h3 className="font-bold text-slate-900">{t('list.title')}</h3>
           <span className="text-xs text-slate-500">({total})</span>
           <select
+            data-testid="transfer-list-source"
             value={listFromWarehouseId}
             onChange={(e) => setListFromWarehouseId(e.target.value)}
             className="text-sm px-2 py-2 bg-white border border-slate-200 rounded-lg min-w-[140px]"
@@ -659,6 +708,7 @@ export const Transfers = () => {
             ))}
           </select>
           <select
+            data-testid="transfer-list-destination"
             value={listToWarehouseId}
             onChange={(e) => setListToWarehouseId(e.target.value)}
             className="text-sm px-2 py-2 bg-white border border-slate-200 rounded-lg min-w-[140px]"
