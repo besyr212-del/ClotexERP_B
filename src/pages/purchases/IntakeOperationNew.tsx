@@ -10,6 +10,7 @@ import { createIntakeOperation, type IntakeActionType } from '../../lib/api/inta
 import { ApiRequestError } from '../../lib/api/client';
 import { useToast } from '../../components/NonBlockingToast';
 import { PreparationTypesModal } from '../../components/purchases/PreparationTypesModal';
+import { ExternalManufacturingLookup } from '../../components/purchases/ExternalManufacturingLookup';
 
 const ACTION_TYPES: { value: IntakeActionType; labelKey: string }[] = [
   { value: 'PROCESSING', labelKey: 'actionProcessing' },
@@ -30,6 +31,7 @@ export const IntakeOperationNew: React.FC = () => {
   const [prepManageOpen, setPrepManageOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [receivingManufacturing, setReceivingManufacturing] = useState(false);
 
   const [supplierId, setSupplierId] = useState('');
   const [supplierSearch, setSupplierSearch] = useState('');
@@ -121,6 +123,8 @@ export const IntakeOperationNew: React.FC = () => {
     }
   };
 
+  if (receivingManufacturing) return <div className="p-4 space-y-4"><button onClick={() => setReceivingManufacturing(false)}>العودة لاختيار نوع العملية</button><ExternalManufacturingLookup /></div>;
+
   if (loading) {
     return (
       <div className="p-8 flex items-center justify-center text-slate-500">
@@ -194,6 +198,7 @@ export const IntakeOperationNew: React.FC = () => {
         <label className="space-y-1 block">
           <span className="text-xs font-bold text-slate-600">{t('actionTypeLabel')}</span>
           <div className="grid grid-cols-2 gap-2">
+            <button type="button" onClick={() => setReceivingManufacturing(true)} className="rounded-lg border px-3 py-2 text-sm font-bold border-emerald-500 text-emerald-800">استلام من مصنعية خارجية</button>
             {ACTION_TYPES.map((opt) => (
               <button
                 key={opt.value}
