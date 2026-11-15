@@ -107,15 +107,16 @@ export const ExternalJobs = () => {
                 <th className="px-4 py-3">{t('table.colDate')}</th>
                 <th className="px-4 py-3">{t('table.colSupplier')}</th>
                 <th className="px-4 py-3">{t('table.colLines')}</th>
+                <th className="px-4 py-3">التجهيز / المرسل / المستلم / المتبقي / الفروقات</th>
                 <th className="px-4 py-3">{t('table.colFee')}</th>
                 <th className="px-4 py-3">{t('table.colStatus')}</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
               {loading ? (
-                <tr><td colSpan={7} className="px-4 py-10 text-center"><Loader2 className="w-5 h-5 animate-spin mx-auto text-slate-400" /></td></tr>
+                <tr><td colSpan={8} className="px-4 py-10 text-center"><Loader2 className="w-5 h-5 animate-spin mx-auto text-slate-400" /></td></tr>
               ) : jobs.length === 0 ? (
-                <tr><td colSpan={7} className="px-4 py-10 text-center text-slate-400">{t('table.noJobs')}</td></tr>
+                <tr><td colSpan={8} className="px-4 py-10 text-center text-slate-400">{t('table.noJobs')}</td></tr>
               ) : jobs.map((job) => (
                 <tr
                   key={job.id}
@@ -136,6 +137,7 @@ export const ExternalJobs = () => {
                   <td className="px-4 py-3 text-slate-600">
                     {t('table.linesProgress', { received: job.received_count ?? 0, total: job.line_count ?? 0 })}
                   </td>
+                  <td className="px-4 py-3 text-xs"><p>{job.preparation_type_name || '—'}</p><p>{Number(job.sent_m||0).toFixed(3)} / {Number(job.returned_m||0).toFixed(3)} / {Math.max(0,Number(job.sent_m||0)+Number(job.excess_m||0)-Number(job.returned_m||0)-Number(job.shortage_m||0)).toFixed(3)} م</p><p>{job.open_defects ? 'عيوب تنتظر قراراً' : Number(job.sent_m||0)+Number(job.excess_m||0)-Number(job.returned_m||0)-Number(job.shortage_m||0)>0.0005 ? 'فرق غير محسوم' : 'محسومة'} — نقص: {job.shortage_m||0} — زيادة: {job.excess_m||0}</p></td>
                   <td className="px-4 py-3 text-slate-600">
                     {job.fee_amount != null
                       ? `${Number(job.fee_amount).toLocaleString(undefined, { minimumFractionDigits: 2 })} ${job.fee_currency_code}${job.fee_posted_at ? ` — ${t('table.feePosted')}` : ''}`

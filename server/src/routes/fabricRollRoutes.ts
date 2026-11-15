@@ -229,6 +229,7 @@ export const fabricRollRoutes: FastifyPluginAsync = async (app) => {
     if (onlyAvailable) {
       conds.push(`fr.status NOT IN ('SOLD', 'INACTIVE')`);
       conds.push(`fr.status IN ('AVAILABLE', 'RESERVED')`);
+      conds.push(`NOT EXISTS (SELECT 1 FROM external_job_return_lines q WHERE q.result_roll_id=fr.id AND q.company_id=fr.company_id AND q.defective AND q.resolution IS NULL)`);
       // Barcode identity scan (sales invoice): include AVAILABLE rolls missing length_m
       // so the cashier can complete length from the invoice line.
       if (!barcode) {
