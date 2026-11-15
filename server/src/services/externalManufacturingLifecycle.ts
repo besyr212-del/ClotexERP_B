@@ -4,6 +4,9 @@ import { z } from 'zod';
 import { generateBarcode, calcWeight } from '../utils/rollHelpers.js';
 import { findOrCreateColor } from './purchaseInvoiceService.js';
 import { getExchangeRateToUsdTx } from './exchangeRateService.js';
+import { assertNoQualityHold } from './externalJobQualityHold.js';
+
+export { assertNoQualityHold };
 
 type Db = Pick<PoolClient, 'query'>;
 const fail = (message: string, code = 'VALIDATION'): never => { throw Object.assign(new Error(message), { code }); };
@@ -258,8 +261,9 @@ export async function priceManufacturingServices(db: Db, companyId: string, user
     if (l.basis === 'FIXED' && l.approvedQuantity !== 1) fail('كمية المبلغ المقطوع يجب أن تكون واحداً');
     const currency = l.currencyCode.toUpperCase();
     if (!(await db.query('SELECT 1 FROM currencies WHERE code=$1', [currency])).rows.length) fail('العملة غير موجودة');
-    const rate = currency === 'USD' ? 1 : await getExchangeRateToUsdTx(db as PoolClient, companyId, currency);
-    if (!rate || rate <= 0) fail('سعر الصرف غير صالح');
+    const rawRate = currency === 'USD' ? 1 : await getExchangeRateToUsdTx(db as PoolClient, companyId, currency);
+    if (!rawRate || rawRate <= 0) fail('سعر الصرف غير صالح');
+    const rate = rawRate as number;
     const usd = Math.round(l.unitPrice * l.approvedQuantity / rate * 10000) / 10000;
     if (!Number.isFinite(usd) || usd > 9999999999.9999) fail('إجمالي الخدمة يتجاوز الحد المحاسبي المسموح');
     totalUsd += usd;
@@ -289,6 +293,3 @@ export async function closeManufacturingJob(db: Db, companyId: string, jobId: st
   await db.query('UPDATE external_jobs SET lifecycle_closed_at=now(),updated_at=now() WHERE id=$1 AND company_id=$2', [jobId, companyId]);
 }
 
-export async function assertNoQualityHold(db: Db, companyId: string, rollId: string) {
-  if ((await db.query(`SELECT 1 FROM external_job_return_lines WHERE company_id=$1 AND result_roll_id=$2 AND defective AND resolution IS NULL`, [companyId, rollId])).rows.length) fail('البضاعة محجوزة للفحص؛ البيع والصرف والنقل ممنوع', 'INVALID_STOCK');
-}

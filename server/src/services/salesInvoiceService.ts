@@ -1,6 +1,6 @@
 import type { PoolClient } from 'pg';
 import { z } from 'zod';
-import { assertNoQualityHold } from './externalManufacturingLifecycle.js';
+import { assertNoQualityHold } from './externalJobQualityHold.js';
 
 /** Pool or client — list/detail helpers only need `.query`. */
 type DbQuery = Pick<PoolClient, 'query'>;

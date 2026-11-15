@@ -116,6 +116,11 @@ function createFakeDb() {
       externalJobLines.push({ id: `line-${externalJobLines.length + 1}`, job_id: jobId, company_id: companyId, roll_id: rollId, sent_color_id: colorId, sent_length_m: lengthM, sent_barcode: barcode, line_status: 'SENT' });
       return { rows: [] };
     }
+    if (sql.startsWith('select status from fabric_rolls where id=$1 and company_id=$2 for update')) {
+      const [rollId, companyId] = params as [string, string];
+      const roll = fabricRolls.find((r) => r.id === rollId && r.company_id === companyId);
+      return { rows: roll ? [{ status: roll.status }] : [] };
+    }
     if (sql.startsWith("update fabric_rolls set status='at_external_job'")) {
       const [rollId, companyId] = params as [string, string];
       const roll = fabricRolls.find((r) => r.id === rollId && r.company_id === companyId);
@@ -151,6 +156,29 @@ function createFakeDb() {
       const [id, companyId] = params as [string, string];
       const row = externalJobs.find((j) => j.id === id && j.company_id === companyId);
       if (row) row.document_status = 'VOIDED';
+      return { rows: [] };
+    }
+    if (sql.includes('from external_job_return_lines') && sql.includes('defective') && sql.includes('resolution is null')) {
+      // لا توجد دفعات إرجاع/حجز فحص بهذه الاختبارات — لا حجز جودة إطلاقاً.
+      return { rows: [] };
+    }
+    if (sql.startsWith('update external_job_lines l set sent_weight_kg')) {
+      // لقطة بيانات الرول الأصلية وقت الإرسال — لا تؤثر على تأكيدات هذا الاختبار.
+      return { rows: [] };
+    }
+    if (sql.includes("coalesce(p.name,'مصنعية') as name") && sql.includes('from external_jobs j')) {
+      const [id, companyId] = params as [string, string];
+      const job = externalJobs.find((j) => j.id === id && j.company_id === companyId);
+      const quantity = externalJobLines
+        .filter((l) => l.job_id === id && l.company_id === companyId)
+        .reduce((sum, l) => sum + Number(l.sent_length_m || 0), 0);
+      return { rows: job ? [{ name: 'مصنعية', quantity }] : [] };
+    }
+    if (sql.startsWith('insert into external_job_services')) {
+      return { rows: [] };
+    }
+    if (sql.includes('from external_job_return_batches') && sql.includes('union all') && sql.includes('external_job_settlements')) {
+      // لا دفعات إرجاع ولا تسويات بهذه الاختبارات — لا يمنع الإلغاء/تعديل الخدمات.
       return { rows: [] };
     }
 
