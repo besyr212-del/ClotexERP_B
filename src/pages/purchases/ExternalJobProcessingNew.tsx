@@ -18,6 +18,7 @@ import { PreparationTypesModal } from '../../components/purchases/PreparationTyp
 type SelectedRoll = FabricRollDto;
 
 export const ExternalJobProcessingNew = () => {
+  const { t: lifecycleT, i18n: lifecycleI18n } = useTranslation('externalJobs');
   const { t } = useTranslation('externalJobs');
   const navigate = useNavigate();
   const [query] = useSearchParams();
@@ -177,7 +178,7 @@ export const ExternalJobProcessingNew = () => {
   const selectedWarehouse = warehouses.find((w) => w.id === sourceWarehouseId);
 
   return (
-    <div className="max-w-5xl mx-auto space-y-6" dir="rtl">
+    <div className="max-w-5xl mx-auto space-y-6" dir={lifecycleI18n.dir()}>
       <div className="flex items-center gap-4">
         <button onClick={() => navigate('/purchases/external-jobs')} className="p-2 bg-white border border-slate-200 rounded-lg text-slate-600 hover:bg-slate-50 transition">
           <ArrowRight className="w-5 h-5" />
@@ -190,8 +191,7 @@ export const ExternalJobProcessingNew = () => {
         </div>
       </div>
 
-      <label className="block border rounded p-3">ربط مرحلة تشغيل سابقة (اختياري)
-        <input className="block w-full border rounded p-2" value={previousJobId} onChange={e => setPreviousJobId(e.target.value)} placeholder="معرّف المهمة السابقة؛ يُملأ من رابط إعادة التشغيل" />
+      <label className="block border rounded p-3">{lifecycleT('lifecycle.linkPrevious')}<input className="block w-full border rounded p-2" value={previousJobId} onChange={e => setPreviousJobId(e.target.value)} placeholder={lifecycleT('lifecycle.previousId')} />
       </label>
 
       {/* Step 1: stage */}

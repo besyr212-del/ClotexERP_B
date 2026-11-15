@@ -133,8 +133,16 @@ export async function manufacturingOverview(db: Db, companyId: string, jobId: st
     ARRAY(SELECT service_id FROM external_job_return_services WHERE batch_id=b.id) AS service_ids
     FROM external_job_return_batches b WHERE b.job_id=$1 AND b.company_id=$2 ORDER BY received_at`, [jobId, companyId])).rows;
   const settlements = (await db.query('SELECT * FROM external_job_settlements WHERE job_id=$1 AND company_id=$2 ORDER BY approved_at', [jobId, companyId])).rows;
-  const legacy = (await db.query('SELECT * FROM external_job_receipts WHERE job_id=$1 AND company_id=$2', [jobId, companyId])).rows;
-  return { job, lines, services, batches, settlements, legacy, legacyMode: !!legacy.length || (!batches.length && !settlements.length && lines.some(l => l.line_status === 'RECEIVED')) };
+  const legacy = (await db.query(`SELECT q.*,r.barcode AS result_roll_barcode,w.name AS destination_warehouse_name
+    FROM external_job_receipts q LEFT JOIN fabric_rolls r ON r.id=q.result_roll_id AND r.company_id=q.company_id
+    LEFT JOIN warehouses w ON w.id=q.destination_warehouse_id AND w.company_id=q.company_id
+    WHERE q.job_id=$1 AND q.company_id=$2`, [jobId, companyId])).rows;
+  const legacyMode = !!legacy.length || (!batches.length && !settlements.length && lines.some(l => l.line_status === 'RECEIVED'));
+  // Read-only projection: never allocate a historic aggregate receipt to individual rolls.
+  const displayLines = legacyMode && !legacy.length ? lines.map(l => ({ ...l,
+    returned_m: l.line_status === 'RECEIVED' ? l.new_length_m ?? l.sent_length_m ?? '0' : '0',
+  })) : lines;
+  return { job, lines: displayLines, services, batches, settlements, legacy, legacyMode };
 }
 
 const returnSchema = z.object({
