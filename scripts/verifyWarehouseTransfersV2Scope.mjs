@@ -1,0 +1,88 @@
+import assert from 'node:assert/strict';
+import {randomUUID} from 'node:crypto';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import pg from 'pg';
+import bcrypt from 'bcryptjs';
+const f=JSON.parse(await fs.readFile('.local-test-results/task001-fixtures.json','utf8'));
+assert.equal(f.api,'http://127.0.0.1:14030');
+const pool=new pg.Pool({connectionString:'postgresql://task001_v2@127.0.0.1:5432/clotex_transfer_test_task001_v2'});
+assert.equal(path.resolve((await pool.query("SELECT current_setting('data_directory') AS directory")).rows[0].directory).toLowerCase(),path.resolve('.local-test-tools/pgdata').toLowerCase());
+const request=async(method,url,payload,token=f.token)=>{
+ const r=await fetch(f.api+url,{method,headers:{authorization:`Bearer ${token}`,...(payload===undefined?{}:{'content-type':'application/json'})},body:payload===undefined?undefined:JSON.stringify(payload)});
+ return {status:r.status,body:await r.json()};
+};
+const results=[];
+if(process.argv.includes('--sessions-only')){
+ try{
+  const username=`session-${randomUUID()}`,password=randomUUID();
+  const id=(await pool.query("INSERT INTO users(company_id,username,password_hash,role) VALUES($1,$2,$3,'inventory') RETURNING id",[f.company,username,await bcrypt.hash(password,10)])).rows[0].id;
+  const login=await request('POST','/api/auth/login',{username,password});assert.equal(login.status,200);
+  assert.equal((await request('GET','/api/inventory/transfers',undefined,login.body.token)).status,200);
+  const sessions=await request('GET','/api/system/active-sessions');const session=sessions.body.data.find(s=>s.userId===id);assert.ok(session);
+  assert.equal((await request('DELETE',`/api/system/active-sessions/${session.sessionKey}`)).status,200);
+  const revoked=await request('GET','/api/inventory/transfers',undefined,login.body.token);assert.equal(revoked.status,401);assert.equal(revoked.body.code,'SESSION_REVOKED');
+  const prior=JSON.parse(await fs.readFile('.local-test-results/task001-v2-scope-results.json','utf8'));prior.push('existing session revocation blocks transfer routes immediately');
+  await fs.writeFile('.local-test-results/task001-v2-scope-results.json',JSON.stringify(prior,null,2));console.log('Existing session revocation regression PASS');
+ }finally{await pool.end();}
+ process.exit(0);
+}
+try{
+ const suffix=randomUUID(); const company=f.company;
+ const wh=(await pool.query("INSERT INTO warehouses(company_id,code,name,fabric_stage) VALUES($1,$2,'Scope source','RAW') RETURNING id",[company,`scope-${suffix}`])).rows[0].id;
+ const dest=(await pool.query("INSERT INTO warehouses(company_id,code,name) VALUES($1,$2,'Scope destination') RETURNING id",[company,`scope-dest-${suffix}`])).rows[0].id;
+ const supplier=(await pool.query("INSERT INTO suppliers(company_id,code,name,is_processing_party) VALUES($1,$2,'Synthetic processor',true) RETURNING id",[company,`scope-${suffix}`])).rows[0].id;
+ const prep=(await pool.query("INSERT INTO external_job_preparation_types(company_id,name) VALUES($1,$2) RETURNING id",[company,`scope-${suffix}`])).rows[0].id;
+ const item=(await pool.query("INSERT INTO fabric_items(company_id,internal_code,name) VALUES($1,$2,'Scope fabric') RETURNING id",[company,`scope-${suffix}`])).rows[0].id;
+ const newRoll=async(status,warehouse=wh,owner=company,material=item)=>(await pool.query("INSERT INTO fabric_rolls(company_id,barcode,item_id,warehouse_id,length_m,status) VALUES($1,$2,$3,$4,20,$5) RETURNING id,barcode",[owner,randomUUID(),material,warehouse,status])).rows[0];
+ const reserved=await newRoll('RESERVED');const sent=await newRoll('AVAILABLE');const available=await newRoll('AVAILABLE');
+ const job=await request('POST','/api/external-jobs/processing',{supplierId:supplier,fabricStage:'RAW',preparationTypeId:prep,sourceWarehouseId:wh,rollIds:[sent.id]});
+ assert.equal(job.status,201,JSON.stringify(job.body));
+ const shared=await request('GET',`/api/inventory/rolls?warehouseId=${wh}&onlyAvailable=true`);
+ assert.ok(shared.body.data.some(r=>r.id===reserved.id),'Shared onlyAvailable must continue to include RESERVED');
+ const eligible=await request('GET',`/api/inventory/transfers/eligible-rolls?warehouseId=${wh}`);
+ assert.deepEqual(eligible.body.data.map(r=>r.id),[available.id]);
+ const transferPayload=(rollId)=>({fromWarehouseId:wh,toWarehouseId:dest,clientRequestId:randomUUID(),lines:[{fabricRollId:rollId,quantity:1}]});
+ assert.equal((await request('POST','/api/inventory/transfers',transferPayload(sent.id))).status,409);
+ assert.equal((await request('POST',`/api/inventory/rolls/${sent.id}/move`,{toWarehouseId:dest})).status,409);
+ assert.equal((await pool.query('SELECT status FROM fabric_rolls WHERE id=$1',[sent.id])).rows[0].status,'AT_EXTERNAL_JOB');
+ results.push('shared availability unchanged; manufacturing rolls rejected by transfer and direct move');
+ const line=(await pool.query('SELECT id FROM external_job_lines WHERE job_id=$1',[job.body.data.id])).rows[0].id;
+ assert.equal((await request('POST',`/api/external-jobs/${job.body.data.id}/lines/${line}/receive`,{})).status,200);
+ const afterReceipt=await request('POST','/api/inventory/transfers',transferPayload(sent.id));assert.equal(afterReceipt.status,201);
+ assert.equal((await request('PATCH',`/api/inventory/transfers/${afterReceipt.body.data.id}/confirm`,{})).status,200);
+ assert.equal((await pool.query('SELECT line_status FROM external_job_lines WHERE id=$1',[line])).rows[0].line_status,'RECEIVED');
+ results.push('existing processing dispatch and line receipt still work; returned roll can transfer');
+ const other=(await pool.query("INSERT INTO companies(code,name) VALUES($1,'Other synthetic tenant') RETURNING id",[`scope-b-${suffix}`])).rows[0].id;
+ const otherWh=(await pool.query("INSERT INTO warehouses(company_id,code,name) VALUES($1,'other','Other tenant warehouse') RETURNING id",[other])).rows[0].id;
+ const otherItem=(await pool.query("INSERT INTO fabric_items(company_id,internal_code,name) VALUES($1,'other','Other material') RETURNING id",[other])).rows[0].id;
+ const otherRoll=await newRoll('AVAILABLE',otherWh,other,otherItem);
+ assert.equal((await request('POST','/api/inventory/transfers',transferPayload(otherRoll.id))).status,400);
+ const cross=await request('GET',`/api/inventory/transfers/eligible-rolls?warehouseId=${otherWh}`);assert.deepEqual(cross.body.data,[]);
+ assert.equal((await request('POST','/api/inventory/transfers',{...transferPayload(available.id),toWarehouseId:otherWh})).status,400);
+ const username=`scope-b-${suffix}`,password=randomUUID();
+ await pool.query("INSERT INTO users(company_id,username,password_hash,role) VALUES($1,$2,$3,'admin')",[other,username,await bcrypt.hash(password,10)]);
+ const login=await request('POST','/api/auth/login',{username,password});assert.equal(login.status,200);
+ assert.equal((await request('GET',`/api/inventory/transfers/${afterReceipt.body.data.id}`,undefined,login.body.token)).status,404);
+ assert.equal((await request('PATCH',`/api/inventory/transfers/${afterReceipt.body.data.id}/confirm`,{},login.body.token)).status,404);
+ results.push('two-tenant roll, warehouse, detail and confirmation isolation');
+ await pool.query("INSERT INTO roles(code,name) VALUES('inventory','Inventory') ON CONFLICT(code) DO NOTHING; INSERT INTO permissions(code,name) VALUES('inventory.manage','Manage inventory') ON CONFLICT(code) DO NOTHING; INSERT INTO role_permissions(role_id,permission_id) SELECT r.id,p.id FROM roles r CROSS JOIN permissions p WHERE r.code='inventory' AND p.code='inventory.manage' ON CONFLICT DO NOTHING");
+ const worker=`inventory-${suffix}`,workerPassword=randomUUID();
+ const user=(await pool.query("INSERT INTO users(company_id,username,password_hash,role) VALUES($1,$2,$3,'inventory') RETURNING id",[company,worker,await bcrypt.hash(workerPassword,10)])).rows[0].id;
+ const workerLogin=await request('POST','/api/auth/login',{username:worker,password:workerPassword});
+ assert.equal((await request('POST','/api/inventory/transfers',transferPayload(available.id),workerLogin.body.token)).status,201);
+ await pool.query('UPDATE users SET is_active=false WHERE id=$1',[user]);
+ assert.equal((await request('GET','/api/inventory/transfers',undefined,workerLogin.body.token)).status,401);
+ results.push('inventory.manage accepted; inactive session rejected by existing authentication');
+ const largeSource=(await pool.query("INSERT INTO warehouses(company_id,code,name) VALUES($1,$2,'Pagination transfer source') RETURNING id",[company,`large-${suffix}`])).rows[0].id;
+ await pool.query("INSERT INTO fabric_rolls(company_id,barcode,item_id,warehouse_id,length_m,unit_cost,currency_code,status) SELECT $1,$2 || '-' || n::text,$3,$4,1.125,7,'USD','AVAILABLE' FROM generate_series(1,505) AS series(n)",[company,`large-${suffix}`,item,largeSource]);
+ const page1=await request('GET',`/api/inventory/transfers/eligible-rolls?warehouseId=${largeSource}&page=1&pageSize=500`);
+ const page2=await request('GET',`/api/inventory/transfers/eligible-rolls?warehouseId=${largeSource}&page=2&pageSize=500`);
+ assert.equal(page1.body.total,505);assert.equal(page1.body.data.length,500);assert.equal(page2.body.data.length,5);
+ assert.equal(new Set([...page1.body.data,...page2.body.data].map(r=>r.id)).size,505);
+ f.large={source:largeSource,destination:dest,item};await fs.writeFile('.local-test-results/task001-fixtures.json',JSON.stringify(f));
+ results.push('real 505-roll pagination returns all rolls exactly once');
+ assert.equal(Number((await pool.query('SELECT count(*) FROM journal_entries WHERE company_id=$1',[company])).rows[0].count),0);
+ await fs.writeFile('.local-test-results/task001-v2-scope-results.json',JSON.stringify(results,null,2));
+ console.log('Scope regression groups passed:',results.length);
+}finally{await pool.end();}

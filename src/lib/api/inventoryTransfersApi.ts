@@ -1,6 +1,16 @@
 import { apiFetch } from './client';
+import type { FabricRollDto } from './fabricRollsApi';
 
 export type TransferStatus = 'DRAFT' | 'CONFIRMED' | 'CANCELLED';
+
+/** Transfer-only eligibility; never changes the shared onlyAvailable behavior. */
+export async function listEligibleTransferRolls(params: {
+  warehouseId: string; locationId?: string; search?: string; barcode?: string; page?: number; pageSize?: number;
+}) {
+  const q = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) if (value !== undefined && value !== '') q.set(key, String(value));
+  return apiFetch<{ ok: boolean; data: FabricRollDto[]; total: number; page: number; pageSize: number }>(`/api/inventory/transfers/eligible-rolls?${q}`);
+}
 
 export interface InventoryTransferRow {
   id: string;
@@ -22,6 +32,7 @@ export interface InventoryTransferRow {
 }
 
 export interface InventoryTransferLine {
+  roll: FabricRollDto;
   id: string;
   fabric_roll_id: string;
   line_barcode: string | null;
@@ -68,6 +79,7 @@ export async function getInventoryTransfer(id: string) {
 }
 
 export async function createInventoryTransfer(payload: {
+  clientRequestId: string;
   fromWarehouseId: string;
   fromLocationId?: string | null;
   toWarehouseId: string;
@@ -100,10 +112,10 @@ export async function updateInventoryTransfer(
   });
 }
 
-export async function confirmInventoryTransfer(id: string) {
+export async function confirmInventoryTransfer(id: string, expectedUpdatedAt?: string) {
   return apiFetch<{ ok: boolean; data: InventoryTransferRow }>(`/api/inventory/transfers/${id}/confirm`, {
     method: 'PATCH',
-    body: JSON.stringify({}),
+    body: JSON.stringify({ expectedUpdatedAt }),
   });
 }
 
