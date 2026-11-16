@@ -3,6 +3,8 @@ import { apiFetch } from './client';
 export interface SalesInvoiceLinePayload {
   fabricRollId?: string | null;
   yarnLotId?: string | null;
+  /** عند unit='kg': يميّز "قماش بالكيلو" (fabricRollId) عن "خيوط بالكيلو" (yarnLotId). افتراضي YARN بالخادم إن لم تُرسَل. */
+  commodityType?: 'FABRIC' | 'YARN';
   fabricItemId?: string | null;
   variantId?: string | null;
   warehouseId?: string | null;

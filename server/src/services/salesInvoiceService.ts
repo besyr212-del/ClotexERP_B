@@ -24,6 +24,9 @@ const EPS = INVOICE_AMOUNT_EPS;
 export const invoiceLineSchema = z.object({
   fabricRollId: z.string().uuid().optional().nullable(),
   yarnLotId: z.string().uuid().optional().nullable(),
+  /** يميّز سطر "قماش بالكيلو" (fabricRollId) عن "خيط بالكيلو" (yarnLotId) عند unit==='kg' —
+   * افتراضي 'YARN' للتوافق التام مع كل الفواتير والواجهات القديمة التي لا ترسله. */
+  commodityType: z.enum(['FABRIC', 'YARN']).default('YARN'),
   fabricItemId: z.string().uuid().optional().nullable(),
   variantId: z.string().uuid().optional().nullable(),
   warehouseId: z.string().uuid().optional().nullable(),
@@ -676,7 +679,7 @@ async function insertLines(
   let i = 0;
   for (const ln of lines) {
     i++;
-    const isYarnLine = ln.unit === 'kg';
+    const isYarnLine = ln.unit === 'kg' && ln.commodityType !== 'FABRIC';
     let fabricRollId = isYarnLine ? null : ln.fabricRollId ?? null;
     if (!isYarnLine && !fabricRollId) {
       fabricRollId = await resolveFabricRollIdForSalesLine(client, companyId, {
@@ -693,8 +696,8 @@ async function insertLines(
       `INSERT INTO sales_invoice_lines (
          company_id, invoice_id, line_no, fabric_roll_id, yarn_lot_id, fabric_item_id, variant_id, warehouse_id,
          description, quantity, unit, unit_price, line_discount, line_tax, line_total,
-         unit_price_usd, line_discount_usd, line_tax_usd, line_total_usd, metadata, customer_order_line_id
-       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20::jsonb,$21)`,
+         unit_price_usd, line_discount_usd, line_tax_usd, line_total_usd, metadata, customer_order_line_id, commodity_type
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20::jsonb,$21,$22)`,
       [
         companyId,
         invoiceId,
@@ -718,6 +721,7 @@ async function insertLines(
         JSON.stringify(ln.metadata ?? {}),
         ln.customerOrderLineId ??
           (typeof ln.metadata?.customerOrderLineId === 'string' ? ln.metadata.customerOrderLineId : null),
+        ln.unit === 'kg' ? ln.commodityType : null,
       ],
     );
   }
@@ -1552,7 +1556,13 @@ export async function confirmSalesInvoice(
   )[] = [];
 
   for (const ln of lines.rows) {
-    if (ln.unit === 'kg') {
+    // بيع "قماش بالكيلو" (commodity_type='FABRIC') يستخدم نفس مسار بيع الثوب
+    // بالمتر أدناه حرفياً — الفرق الوحيد: الوزن (kg) هو أساس التسعير، لا الطول،
+    // والنطاق الحالي هو بيع الثوب كاملاً فقط (لا تقسيم جزء من الوزن). التكلفة
+    // (COGS) تبقى محسوبة من أساس الثوب الحقيقي (لكل متر) بصرف النظر عن وحدة
+    // البيع — الثوب نفسه لم يتغيّر أساس تكلفته لمجرد بيعه بالكيلو.
+    const isFabricKg = ln.unit === 'kg' && ln.commodity_type === 'FABRIC';
+    if (ln.unit === 'kg' && !isFabricKg) {
       const cogsEntry = await confirmYarnSalesLine(
         client,
         companyId,
@@ -1567,7 +1577,9 @@ export async function confirmSalesInvoice(
       continue;
     }
 
-    const qtyM = quantityToMeters(Number(ln.quantity), ln.unit as 'meter' | 'yard');
+    // سِنتينل مؤقت لحين معرفة طول الثوب الفعلي أدناه — يضمن عدم تخطّي سطر
+    // "قماش بالكيلو" خطأً باعتباره كمية صفرية قبل ربطه بثوب حقيقي.
+    let qtyM = isFabricKg ? Number.POSITIVE_INFINITY : quantityToMeters(Number(ln.quantity), ln.unit as 'meter' | 'yard');
 
     if (isStatementImportLineMetadata(ln.metadata)) {
       const meta = parseSalesLineMetadata(ln);
@@ -1632,7 +1644,12 @@ export async function confirmSalesInvoice(
     }
 
     const len = Number(roll.length_m);
-    if (qtyM > len + EPS) {
+    if (isFabricKg) {
+      // نطاق هذه المرحلة: بيع الثوب كاملاً بالكيلو فقط — الكمية المدخلة
+      // بالفاتورة هي الوزن لأغراض التسعير حصراً، ولا تُستخدَم لتحديد كمية
+      // الاستهلاك من الثوب (التي تبقى دائماً طوله الكامل).
+      qtyM = len;
+    } else if (qtyM > len + EPS) {
       throw Object.assign(new Error('الكمية المباعة أكبر من رصيد المتر على الثوب'), { code: 'INVALID_STOCK' });
     }
 

@@ -571,6 +571,11 @@ export const InvoiceForm = () => {
   const [partyId, setPartyId] = useState('');
   /** نوع الفاتورة بأكملها: توب/متر (الافتراضي، القماش) أو كج (الخيط بالوزن) — على مستوى الفاتورة، بجانب اختيار العميل/المورد. */
   const [invoiceUnitMode, setInvoiceUnitMode] = useState<'meter' | 'kg'>('meter');
+  /** عند 'kg': يميّز "قماش بالكيلو" (نفس واجهة/منطق بيع الأتواب بالمتر، لكن
+   * الوزن أساس السعر) عن "خيوط بالكيلو" (دفعات الخيط الموجودة فعلاً). افتراضي
+   * YARN للحفاظ التام على سلوك الفاتورة الحالي عند عدم التغيير. */
+  const [kgCommodity, setKgCommodity] = useState<'FABRIC' | 'YARN'>('YARN');
+  const isYarnMode = invoiceUnitMode === 'kg' && kgCommodity === 'YARN';
   const [warehouse, setWarehouse] = useState('');
   const [apiWarehouses, setApiWarehouses] = useState<ApiWarehouse[]>([]);
   const [warehousesLoading, setWarehousesLoading] = useState(true);
@@ -745,7 +750,16 @@ export const InvoiceForm = () => {
             ? drafts.map((d, i) => ({ ...emptyItem(), ...d, id: Date.now() + i }))
             : [emptyItem()],
         );
-        if (drafts.some((d) => d.unit === 'kg')) setInvoiceUnitMode('kg');
+        if (drafts.some((d) => d.unit === 'kg')) {
+          setInvoiceUnitMode('kg');
+          // عند تحميل فاتورة قائمة للتعديل: استنتج هل كانت "قماش بالكيلو" أم
+          // "خيوط بالكيلو" من البيانات الفعلية المحفوظة (fabric_roll_id مقابل
+          // yarn_lot_id)، لا افتراض اليخيط الدائم.
+          const hasFabricKgLine = res.data.lines.some(
+            (ln) => ln.unit === 'kg' && ln.fabric_roll_id != null,
+          );
+          setKgCommodity(hasFabricKgLine ? 'FABRIC' : 'YARN');
+        }
         if (isSales) {
           const rollIds = [
             ...new Set(
@@ -940,10 +954,7 @@ export const InvoiceForm = () => {
      const qRaw = String(materialSuggest.query || '').trim();
      if (qRaw.includes('|') || isLikelyBarcodePayload(qRaw) || isLikelyIdentityBarcodePayload(qRaw)) return [];
      const q = qRaw.toLowerCase();
-     const activeLineUnit = items.find((it) => it.id === materialSuggest.lineId)?.unit ?? 'meter';
-     const isYarnLine = activeLineUnit === 'kg';
-
-     const rollRowsForSuggest = isYarnLine
+     const rollRowsForSuggest = isYarnMode
        ? (apiYarnLots as unknown as Record<string, unknown>[])
        : isSales
        ? (inventorySource as Record<string, unknown>[]).filter(
@@ -951,7 +962,7 @@ export const InvoiceForm = () => {
          )
        : (inventorySource as Record<string, unknown>[]);
 
-     const itemsForSuggest = isYarnLine
+     const itemsForSuggest = isYarnMode
        ? allFabricItems.filter((it) => it.unit === 'kg')
        : allFabricItems.filter((it) => it.unit !== 'kg');
 
@@ -1821,7 +1832,7 @@ export const InvoiceForm = () => {
     }
 
     if (isLikelyIdentityBarcodePayload(raw)) {
-      const isYarnLine = items.find((l) => l.id === lineId)?.unit === 'kg';
+      const isYarnLine = isYarnMode;
       const stock = isYarnLine ? await lookupYarnLotFromAnywhere(raw) : await lookupStockFromAnywhere(raw);
       if (stock ? rejectDuplicateStockScan(lineId, stock, raw) : rejectDuplicateInvoiceScan({ ...emptyItem(), id: lineId, supplierBarcode: raw, rawBarcodePayload: raw }, lineId)) {
         return false;
@@ -1946,8 +1957,7 @@ export const InvoiceForm = () => {
       return;
     }
 
-    const lineUnitForScan = items.find((l) => l.id === lineId)?.unit;
-    const isYarnLine = lineUnitForScan === 'kg';
+    const isYarnLine = isYarnMode;
 
     if (isLikelyIdentityBarcodePayload(raw)) {
       const stock = isYarnLine
@@ -2552,7 +2562,10 @@ export const InvoiceForm = () => {
     };
 
     const apiLines = await Promise.all(activeItems.map(async (item, index) => {
-      const isYarnLine = item.unit === 'kg';
+      // "قماش بالكيلو" (unit='kg' بدون وضع الخيوط) يُحَل كثوب حقيقي بالضبط كما
+      // يحدث بالمتر — فقط الخيوط الفعلية (isYarnMode) تذهب لمسار دفعة الخيط.
+      const isYarnLine = item.unit === 'kg' && isYarnMode;
+      const isFabricKgLine = item.unit === 'kg' && !isYarnMode;
       const fabricRollId = isYarnLine ? null : isSales ? await resolveSalesFabricRollId(item) : (() => {
         const rollRaw = String(item.internalRollId || '').trim();
         return uuidRe.test(rollRaw) ? rollRaw : null;
@@ -2584,7 +2597,8 @@ export const InvoiceForm = () => {
         yarnLotId,
         description: desc,
         quantity,
-        unit: (isYarnLine ? 'kg' : 'meter') as 'kg' | 'meter',
+        unit: (item.unit === 'kg' ? 'kg' : 'meter') as 'kg' | 'meter',
+        commodityType: isFabricKgLine ? ('FABRIC' as const) : isYarnLine ? ('YARN' as const) : undefined,
         unitPrice,
         lineDiscount: 0,
         lineTax: 0,
@@ -3137,8 +3151,7 @@ export const InvoiceForm = () => {
                       onMouseEnter={() => setMaterialSuggestIndex(idx)}
                       onMouseDown={(ev) => {
                         ev.preventDefault();
-                        const targetItem = items.find((it) => it.id === materialSuggest.lineId);
-                        if (targetItem?.unit === 'kg') applyYarnStockToLine(materialSuggest.lineId, opt.stock);
+                        if (isYarnMode) applyYarnStockToLine(materialSuggest.lineId, opt.stock);
                         else applyStockToLine(materialSuggest.lineId, opt.stock);
                         setMaterialSuggest(null);
                       }}
@@ -3238,12 +3251,18 @@ export const InvoiceForm = () => {
           <div className="space-y-2">
             <label className="text-sm font-bold text-slate-700">{t('typeField.label', { kind: isSales ? t('typeField.sale') : t('typeField.purchase') })}</label>
             <select
-              value={invoiceUnitMode}
-              onChange={(e) => handleInvoiceUnitModeChange(e.target.value === 'kg' ? 'kg' : 'meter')}
-              className="w-full sm:w-40 bg-white border border-slate-200 rounded-lg px-4 py-2 text-slate-900 font-bold focus:outline-none focus:border-indigo-500"
+              value={invoiceUnitMode === 'meter' ? 'meter' : `kg_${kgCommodity.toLowerCase()}`}
+              onChange={(e) => {
+                const v = e.target.value;
+                if (v === 'meter') { handleInvoiceUnitModeChange('meter'); return; }
+                setKgCommodity(v === 'kg_fabric' ? 'FABRIC' : 'YARN');
+                handleInvoiceUnitModeChange('kg');
+              }}
+              className="w-full sm:w-48 bg-white border border-slate-200 rounded-lg px-4 py-2 text-slate-900 font-bold focus:outline-none focus:border-indigo-500"
             >
               <option value="meter">{t('typeField.meterOption')}</option>
-              <option value="kg">{t('typeField.kgOption')}</option>
+              {isSales && <option value="kg_fabric">{t('typeField.kgFabricOption')}</option>}
+              <option value="kg_yarn">{t('typeField.kgYarnOption')}</option>
             </select>
           </div>
         </div>
@@ -3456,10 +3475,10 @@ export const InvoiceForm = () => {
                 <tr className="bg-slate-50 text-slate-600 border border-slate-200">
                   <th className="p-3 font-bold w-12 text-center">#</th>
                   <th className="p-3 font-bold min-w-[160px]">{t('table.colBarcode')}</th>
-                  <th className="p-3 font-bold min-w-[220px]">{invoiceUnitMode === 'kg' ? t('table.colYarnType') : t('table.colMaterial')}</th>
-                  <th className="p-3 font-bold min-w-[120px]">{invoiceUnitMode === 'kg' ? t('table.colSackCount') : t('table.colMaterialCode')}</th>
+                  <th className="p-3 font-bold min-w-[220px]">{isYarnMode ? t('table.colYarnType') : t('table.colMaterial')}</th>
+                  <th className="p-3 font-bold min-w-[120px]">{isYarnMode ? t('table.colSackCount') : t('table.colMaterialCode')}</th>
                   <th className="p-3 font-bold min-w-[130px]">{t('table.colColor')}</th>
-                  {invoiceUnitMode !== 'kg' && <th className="p-3 font-bold min-w-[120px]">{t('table.colColorCode')}</th>}
+                  {!isYarnMode && <th className="p-3 font-bold min-w-[120px]">{t('table.colColorCode')}</th>}
                   <th className="p-3 font-bold w-24">{invoiceUnitMode === 'kg' ? t('table.colQuantityKg') : t('table.colQuantityMeter')}</th>
                   <th className="hidden p-3 font-bold w-24">{t('table.colWidthCm')}</th>
                   <th className="hidden p-3 font-bold w-20">GSM</th>
@@ -3532,7 +3551,7 @@ export const InvoiceForm = () => {
                             type="text"
                             data-invoice-field-index={1}
                             autoComplete="off"
-                            placeholder={invoiceUnitMode === 'kg' ? t('table.yarnTypePlaceholder') : t('table.materialPlaceholder')}
+                            placeholder={isYarnMode ? t('table.yarnTypePlaceholder') : t('table.materialPlaceholder')}
                             value={item.materialName}
                             onFocus={(e) => {
                               materialSuggestInputRef.current = e.currentTarget;
@@ -3610,7 +3629,7 @@ export const InvoiceForm = () => {
                                   if (!raw.includes('|') && !isLikelyBarcodePayload(raw)) {
                                     const opt = materialSuggestOptions[materialSuggestIndex];
                                     if (opt) {
-                                      if (item.unit === 'kg') applyYarnStockToLine(item.id, opt.stock);
+                                      if (isYarnMode) applyYarnStockToLine(item.id, opt.stock);
                                       else applyStockToLine(item.id, opt.stock);
                                       updateItem(
                                         item.id,
@@ -3647,7 +3666,7 @@ export const InvoiceForm = () => {
                       </td>
                       <td className="p-2"><input data-invoice-field-index={2} type="text" value={item.dsamNumber} onChange={(e) => updateItem(item.id, 'dsamNumber', e.target.value)} onBlur={() => warnIfDuplicateLine(item.id)} onKeyDown={(e) => handleInvoiceLineEnter(e, item)} className={`${inputClass()} font-mono text-xs`} dir="ltr" /></td>
                       <td className="p-2"><input data-invoice-field-index={3} type="text" value={item.colorName} onChange={(e) => updateItem(item.id, 'colorName', e.target.value)} onBlur={() => warnIfDuplicateLine(item.id)} onKeyDown={(e) => handleInvoiceLineEnter(e, item)} className={inputClass()} /></td>
-                      {invoiceUnitMode !== 'kg' && (
+                      {!isYarnMode && (
                         <td className="p-2"><input data-invoice-field-index={4} type="text" value={item.colorCode} onChange={(e) => updateItem(item.id, 'colorCode', e.target.value)} onBlur={() => warnIfDuplicateLine(item.id)} onKeyDown={(e) => handleInvoiceLineEnter(e, item)} className={`${inputClass()} font-mono text-xs`} dir="ltr" placeholder="#000" /></td>
                       )}
                       <td className="p-2"><input data-invoice-field-index={5} type="number" min="0.01" value={item.length} onChange={(e) => updateItem(item.id, 'length', e.target.value)} onBlur={(e) => { if (isSales) { void syncMissingRollPhysicalFromInvoiceLine(item, apiRolls, mergeRollIntoApiRolls, { field: 'length', lengthInput: e.currentTarget.value, toastOnSuccess: true, toastOnError: false }); } }} onKeyDown={(e) => handleInvoiceLineEnter(e, item)} title={lengthError} className={inputClass(Boolean(lengthError))} /></td>
@@ -3698,9 +3717,9 @@ export const InvoiceForm = () => {
           <button type="button" onClick={() => setSummaryOpen(!summaryOpen)} className="w-full flex items-center justify-between px-5 py-4 text-right">
             <div>
               <h3 className="text-lg font-bold text-slate-900">
-                {invoiceUnitMode === 'kg' ? t('summary.titleByYarn') : t('summary.titleByMaterial')}
+                {isYarnMode ? t('summary.titleByYarn') : t('summary.titleByMaterial')}
               </h3>
-              <p className="text-sm text-slate-500">{invoiceUnitMode === 'kg' ? t('summary.subtitleByYarn') : t('summary.subtitleByMaterial')}</p>
+              <p className="text-sm text-slate-500">{isYarnMode ? t('summary.subtitleByYarn') : t('summary.subtitleByMaterial')}</p>
             </div>
             {summaryOpen ? <ChevronUp className="w-5 h-5 text-slate-500" /> : <ChevronDown className="w-5 h-5 text-slate-500" />}
           </button>
@@ -3711,10 +3730,10 @@ export const InvoiceForm = () => {
                 <table className="w-full text-sm text-right">
                   <thead className="bg-slate-100 text-slate-600">
                     <tr>
-                      <th className="p-3">{invoiceUnitMode === 'kg' ? t('summary.colYarn') : t('summary.colMaterialFabric')}</th>
+                      <th className="p-3">{isYarnMode ? t('summary.colYarn') : t('summary.colMaterialFabric')}</th>
                       <th className="p-3">{t('summary.colDesignCode')}</th>
                       <th className="p-3">{t('summary.colColorCount')}</th>
-                      <th className="p-3">{invoiceUnitMode === 'kg' ? t('summary.colBatchCount') : t('summary.colRollCount')}</th>
+                      <th className="p-3">{isYarnMode ? t('summary.colBatchCount') : t('summary.colRollCount')}</th>
                       <th className="p-3">{invoiceUnitMode === 'kg' ? t('summary.colTotalWeightKg') : t('summary.colTotalMeters')}</th>
                       <th className="p-3">{invoiceUnitMode === 'kg' ? t('summary.colPricePerKilo') : t('summary.colPricePerMeter')}</th>
                       <th className="p-3">{t('summary.colTotal')}</th>
@@ -3768,7 +3787,7 @@ export const InvoiceForm = () => {
                 </table>
               </div>
               <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-                <SummaryStat label={invoiceUnitMode === 'kg' ? t('summary.statTotalBatches') : t('summary.statTotalRolls')} value={summary.totals.rollCount.toString()} />
+                <SummaryStat label={isYarnMode ? t('summary.statTotalBatches') : t('summary.statTotalRolls')} value={summary.totals.rollCount.toString()} />
                 {invoiceUnitMode === 'kg' ? (
                   <SummaryStat label={t('summary.statTotalWeightKg')} value={summary.totals.totalKg.toFixed(2)} />
                 ) : (

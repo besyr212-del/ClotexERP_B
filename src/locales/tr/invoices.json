@@ -45,6 +45,8 @@
   "typeField.purchase": "Alış",
   "typeField.meterOption": "Top / Metre",
   "typeField.kgOption": "Ağırlık (kg)",
+  "typeField.kgFabricOption": "Kumaş (kg)",
+  "typeField.kgYarnOption": "İplik (kg)",
 
   "orderImport.sectionLabel": "Sipariş İçe Aktar",
   "orderImport.linkedWithNumber": "· Bağlı #{{number}}",

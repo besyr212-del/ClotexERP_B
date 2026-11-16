@@ -45,6 +45,8 @@
   "typeField.purchase": "الشراء",
   "typeField.meterOption": "توب / متر",
   "typeField.kgOption": "وزن (كج)",
+  "typeField.kgFabricOption": "قماش بالكيلو",
+  "typeField.kgYarnOption": "خيوط بالكيلو",
 
   "orderImport.sectionLabel": "استيراد طلبية",
   "orderImport.linkedWithNumber": "· مرتبطة #{{number}}",
