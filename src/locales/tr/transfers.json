@@ -9,7 +9,7 @@
   "bulk.keepPrevious": "Önceki seçimler korunur. Başka kumaşlar ekleyebilir veya topları tek tek kaldırabilirsiniz.",
   "bulk.selectAll": "Kaynaktaki tümünü seç ({{count}})",
   "bulk.clear": "Seçimi temizle",
-  "bulk.totals": "{{count}} top — {{meters}} metre — bilinen {{kg}} kg",
+  "bulk.totals": "{{count}} top — {{materials}} kumaş — {{meters}} metre — bilinen {{kg}} kg",
   "bulk.weightNote": "Bilinmeyen ağırlık: {{unknown}}, hesaplanan: {{estimated}}. Bilinmeyen ağırlık toplama dahil değildir.",
   "bulk.estimated": "hesaplanan",
   "bulk.unknown": "bilinmiyor",

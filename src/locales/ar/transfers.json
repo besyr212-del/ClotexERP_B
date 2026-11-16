@@ -9,7 +9,7 @@
   "bulk.keepPrevious": "يمكن اختيار خامة أخرى مع الاحتفاظ بالاختيارات السابقة، وإزالة أي رولة بشكل فردي.",
   "bulk.selectAll": "تحديد الكل في المصدر ({{count}})",
   "bulk.clear": "مسح الاختيار",
-  "bulk.totals": "{{count}} رولة — {{meters}} متر — {{kg}} كغ معلوم",
+  "bulk.totals": "{{count}} رولة — {{materials}} خامة — {{meters}} متر — {{kg}} كغ معلوم",
   "bulk.weightNote": "أوزان مجهولة: {{unknown}}، أوزان محسوبة: {{estimated}}. الإجمالي لا يشمل الوزن المجهول.",
   "bulk.estimated": "محسوب",
   "bulk.unknown": "غير معروف",

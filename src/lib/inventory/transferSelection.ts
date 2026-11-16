@@ -36,13 +36,15 @@ export function transferColorRolls<T extends TransferRoll>(rolls: T[], itemId: s
 
 export function transferTotals(rolls: TransferRoll[]) {
   let meters = 0, kilograms = 0, unknownWeight = 0, estimatedWeight = 0;
+  const distinctItems = new Set<string>();
   for (const r of rolls) {
     meters += Number(r.length_m);
+    distinctItems.add(r.item_id);
     const weight = r.actual_weight_kg ?? r.calculated_weight_kg;
     if (weight == null || !Number.isFinite(Number(weight))) unknownWeight++;
     else { kilograms += Number(weight); if (r.actual_weight_kg == null) estimatedWeight++; }
   }
-  return { rolls: rolls.length, meters, kilograms, unknownWeight, estimatedWeight };
+  return { rolls: rolls.length, meters, kilograms, unknownWeight, estimatedWeight, distinctItems: distinctItems.size };
 }
 
 // No page cap: fail visibly if pagination is incomplete rather than silently selecting a partial fabric.

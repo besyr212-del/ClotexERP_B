@@ -34,14 +34,6 @@ function warehouseOptionLabel(w: ApiWarehouse): string {
   return w.code ? `${w.name} (${w.code})` : w.name;
 }
 
-function rollDisplayLabel(r: FabricRollDto): string {
-  // لا يُدرَج الباركود هنا — يظهر بعموده المستقل أصلاً بنفس الصف.
-  const parts: string[] = [];
-  if (r.item_name) parts.push(r.item_name);
-  if (r.color_name_ar) parts.push(r.color_name_ar);
-  return parts.join(' — ');
-}
-
 function findRollInResults(code: string, rolls: FabricRollDto[]): FabricRollDto | undefined {
   const norm = code.trim().toLowerCase();
   if (!norm) return undefined;
@@ -244,10 +236,6 @@ export const Transfers = () => {
     setScanHint(t('scan.addedPrefix', { barcode: roll.barcode }));
     setErr(null);
   }, [t, fromWarehouseId, fromLocationId]);
-
-  const removeRoll = (id: string) => {
-    setSelectedRolls((prev) => prev.filter((r) => r.id !== id));
-  };
 
   const handleScanCommit = async () => {
     if (scanBusy || operationLock.current) return;
@@ -613,47 +601,6 @@ export const Transfers = () => {
 
             <TransferFabricSelection warehouseId={fromWarehouseId} locationId={fromLocationId} selected={selectedRolls}
               onChange={setSelectedRolls} disabled={bus.create || bus.act !== null} revision={rollRefresh} />
-
-            {selectedRolls.length > 0 ? (
-              <div className="border border-indigo-100 rounded-lg overflow-hidden">
-                <div className="px-3 py-2 bg-indigo-50 border-b border-indigo-100 text-xs font-medium text-indigo-900">
-                  {t('form.selectedRollsCount', { count: selectedRolls.length.toLocaleString() })}
-                </div>
-                <div className="max-h-48 overflow-y-auto">
-                  <table className="w-full text-right text-xs">
-                    <thead className="bg-slate-50 text-slate-600">
-                      <tr>
-                        <th className="px-3 py-2">{t('form.colBarcode')}</th>
-                        <th className="px-3 py-2">{t('form.colMaterial')}</th>
-                        <th className="px-3 py-2">{t('form.colMeter')}</th>
-                        <th className="px-3 py-2 w-10" />
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100">
-                      {selectedRolls.map((r) => (
-                        <tr key={r.id}>
-                          <td className="px-3 py-2 font-mono">{r.barcode}</td>
-                          <td className="px-3 py-2 truncate max-w-[200px]">{rollDisplayLabel(r)}</td>
-                          <td className="px-3 py-2">{r.length_m}</td>
-                          <td className="px-3 py-2">
-                            <button
-                              type="button"
-                              onClick={() => removeRoll(r.id)}
-                              className="text-rose-600 hover:text-rose-800"
-                              title={t('form.remove')}
-                            >
-                              <X className="w-4 h-4" />
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            ) : (
-              <p className="text-xs text-slate-400">{t('form.noRollsSelected')}</p>
-            )}
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-[1fr_auto] gap-4 items-end border-t border-slate-100 pt-4">

@@ -65,11 +65,11 @@ export function TransferFabricSelection({ warehouseId, locationId, selected, onC
       <button type="button" data-testid="transfer-select-all" disabled={blocked || !rows.length} onClick={() => add(rows)} className="rounded border p-2">{t('bulk.selectAll', { count: rows.length })}</button>
       <button type="button" data-testid="transfer-clear" disabled={disabled} onClick={() => onChange([])} className="rounded border p-2">{t('bulk.clear')}</button>
     </div>
-    <p data-testid="transfer-totals" data-count={selected.length} className="font-bold">{t('bulk.totals', { count: totals.rolls, meters: number(totals.meters), kg: number(totals.kilograms) })}</p>
+    <p data-testid="transfer-totals" data-count={selected.length} className="font-bold">{t('bulk.totals', { count: totals.rolls, materials: totals.distinctItems, meters: number(totals.meters), kg: number(totals.kilograms) })}</p>
     {(totals.unknownWeight > 0 || totals.estimatedWeight > 0) && <p className="text-xs text-amber-700">{t('bulk.weightNote', { unknown: totals.unknownWeight, estimated: totals.estimatedWeight })}</p>}
     {groups.map((group) => <div key={`${group[0].item_id}:${group[0].color_id}`} className="overflow-x-auto rounded border p-2">
       <h4 className="font-bold">{group[0].item_name} — {group[0].internal_code} — {color(group[0])}</h4>
-      <p className="text-xs">{t('bulk.totals', { count: group.length, meters: number(transferTotals(group).meters), kg: number(transferTotals(group).kilograms) })}</p>
+      <p className="text-xs">{t('bulk.totals', { count: group.length, materials: 1, meters: number(transferTotals(group).meters), kg: number(transferTotals(group).kilograms) })}</p>
       <table className="w-full text-right text-xs"><thead><tr>{['colBarcode', 'colMaterial', 'colColor', 'colMeter', 'colWeight', 'colWarehouse', 'colLocation'].map((key) => <th className="p-2" key={key}>{t(`form.${key}`)}</th>)}<th>{t('form.remove')}</th></tr></thead><tbody>
         {group.map((r) => <tr className="border-t" key={r.id}><td className="p-2">{r.barcode}</td><td>{r.item_name} / {r.internal_code}</td><td>{color(r)} / {r.color_code}</td><td>{number(Number(r.length_m))}</td>
           <td>{r.actual_weight_kg != null ? number(Number(r.actual_weight_kg)) : r.calculated_weight_kg != null ? `${number(Number(r.calculated_weight_kg))} (${t('bulk.estimated')})` : t('bulk.unknown')}</td>
