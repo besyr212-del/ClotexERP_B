@@ -379,9 +379,11 @@ export const voucherRoutes: FastifyPluginAsync = async (app) => {
         `SELECT status FROM vouchers WHERE id=$1 AND company_id=$2 FOR UPDATE`,
         [id, companyId],
       );
-      if (!cur.rows.length) return sendError(reply, 404, 'السند غير موجود', 'NOT_FOUND');
+      if (!cur.rows.length) {
+        throw Object.assign(new Error('السند غير موجود'), { code: 'NOT_FOUND' });
+      }
       if (cur.rows[0].status !== 'DRAFT') {
-        return sendError(reply, 400, 'لا يمكن التعديل إلا في حالة مسودة', 'INVALID_STATE');
+        throw Object.assign(new Error('لا يمكن التعديل إلا في حالة مسودة'), { code: 'VALIDATION' });
       }
 
       const vd = d.voucherDate ? d.voucherDate : new Date().toISOString().slice(0, 10);
