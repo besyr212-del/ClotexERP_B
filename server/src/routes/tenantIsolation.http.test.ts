@@ -239,17 +239,18 @@ async function main() {
     assert.ok(!usernames.includes('admin_a_test'), 'B شاف مستخدم A!');
   });
 
-  // (e) POST /system/users مع companyId=A من B → يُنشأ بـ B فعلياً (يُتجاهل الحقل)
-  await test('(e) POST /system/users بـ companyId=A من B → يُنشأ بحساب B لا A', async () => {
+  // (e) A company administrator may not select another company: reject, never silently redirect.
+  await test('(e) POST /system/users بـ companyId=A من B →403 دون إنشاء حساب', async () => {
     const res = await app.inject({
       method: 'POST',
       url: '/api/system/users',
       headers: auth(ctx.adminBToken),
       payload: { username: 'sneaky_user_test', password: 'password123', role: 'viewer', companyId: ctx.companyAId },
     });
-    assert.equal(res.statusCode, 201, res.body);
+    assert.equal(res.statusCode, 403, res.body);
+    assert.equal(res.json().code, 'FORBIDDEN');
     const row = await pool.query('SELECT company_id FROM users WHERE username=$1', ['sneaky_user_test']);
-    assert.equal(row.rows[0].company_id, ctx.companyBId, 'انضاف المستخدم لحساب A رغم أن المنشئ أدمن B!');
+    assert.equal(row.rowCount, 0, 'Rejected cross-company creation must not create an account in either company');
   });
 
   // (f) غير مدير منصة → 403 على نقاط مدير المنصة

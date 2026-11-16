@@ -4,13 +4,15 @@ import { authenticateRequest } from '../middleware/auth.js';
 import { permissionCatalog } from '../security/permissionPolicies.js';
 import { permissionTransaction, getEffectiveProfile, listPermissionTemplates, getPermissionTemplate, saveTemplateDraft, previewTemplate, publishTemplate, archiveTemplate, setDefaultTemplate, updateUserProfile, setPermissionDelegation, checkProfileResource } from '../services/userPermissionProfileService.js';
 
+import { PERMISSION_REVISION_MAX } from '../security/permissionRevision.js';
+
 const uuid=z.string().uuid();
 const companyParams=z.object({companyId:uuid});
 const templateParams=companyParams.extend({id:uuid});
 const userParams=companyParams.extend({userId:uuid});
 const codes=z.array(z.string().min(1).max(150)).max(permissionCatalog.length);
 const draft=z.object({name:z.string().trim().min(1).max(120),codes}).strict();
-const profile=z.object({templateId:uuid.nullable(),overrides:z.record(z.enum(['INHERIT','ALLOW','DENY'])).refine(v=>Object.keys(v).length<=permissionCatalog.length),warehouseMode:z.enum(['ALL','LIST']),warehouseIds:z.array(uuid).max(1000),revision:z.number().int().min(0)}).strict();
+const profile=z.object({templateId:uuid.nullable(),overrides:z.record(z.enum(['INHERIT','ALLOW','DENY'])).refine(v=>Object.keys(v).length<=permissionCatalog.length),warehouseMode:z.enum(['ALL','LIST']),warehouseIds:z.array(uuid).max(1000),revision:z.number().int().min(0).max(PERMISSION_REVISION_MAX)}).strict();
 export const permissionProfileRoutes:FastifyPluginAsync=async(app)=>{
  app.get('/me',{preHandler:authenticateRequest},async(req)=>{
   const user=req.user!;return permissionTransaction(user,req.authToken,user.companyId,false,false,async(db)=>({ok:true,profile:await getEffectiveProfile(db,user.companyId,user.sub)}));
@@ -37,7 +39,7 @@ export const permissionProfileRoutes:FastifyPluginAsync=async(app)=>{
   const {companyId,id}=templateParams.parse(req.params),{name}=z.object({name:draft.shape.name}).strict().parse(req.body);return permissionTransaction(req.user!,req.authToken,companyId,true,true,async(db,a,d)=>({ok:true,data:await saveTemplateDraft(db,a,d,companyId,{name,codes:[],copyFrom:id})}));
  });
  app.put('/companies/:companyId/templates/:id/draft',{preHandler:authenticateRequest},async(req)=>{
-  const {companyId,id}=templateParams.parse(req.params),input=draft.extend({revision:z.number().int().positive()}).strict().parse(req.body);return permissionTransaction(req.user!,req.authToken,companyId,true,true,async(db,a,d)=>({ok:true,data:await saveTemplateDraft(db,a,d,companyId,{...input,id})}));
+  const {companyId,id}=templateParams.parse(req.params),input=draft.extend({revision:z.number().int().positive().max(PERMISSION_REVISION_MAX)}).strict().parse(req.body);return permissionTransaction(req.user!,req.authToken,companyId,true,true,async(db,a,d)=>({ok:true,data:await saveTemplateDraft(db,a,d,companyId,{...input,id})}));
  });
  app.get('/companies/:companyId/templates/:id/preview',{preHandler:authenticateRequest},async(req)=>{
   const {companyId,id}=templateParams.parse(req.params);return permissionTransaction(req.user!,req.authToken,companyId,true,false,async(db)=>({ok:true,data:await previewTemplate(db,companyId,id)}));

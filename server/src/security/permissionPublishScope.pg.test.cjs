@@ -108,6 +108,31 @@ async function main(){
   assert.equal((await send('synthetic wrong password')).statusCode,403);
   assert.equal((await send(testPassword)).statusCode,200);
  });
+
+ test('INTEGER boundary inputs and exhausted persisted counters fail safely and roll back on PostgreSQL',async()=>{
+  const max=2147483647,t=(await expect(200,'POST',company+'/templates',{name:'Synthetic revision boundary',codes:[]})).data;
+  const url=company+'/templates/'+t.id+'/draft';
+  for(const revision of [-1,0,1.25,max+1,Number.MAX_SAFE_INTEGER,'1',null])await expect(400,'PUT',url,{name:'Invalid',codes:[],revision});
+  for(const revision of [-1,1.25,max+1,Number.MAX_SAFE_INTEGER,'0',null])await expect(400,'PUT',company+'/users/'+ids.target+'/profile',{templateId:null,overrides:{},warehouseMode:'LIST',warehouseIds:[],revision});
+  await pool.query('UPDATE permission_templates SET draft_revision=$2 WHERE id=$1',[t.id,max-1]);
+  await expect(200,'PUT',url,{name:'Last valid revision',codes:[],revision:max-1});
+  const audits=async()=>(await pool.query('SELECT count(*) AS n FROM audit_logs')).rows[0].n,before=await audits();
+  const fail=await expect(409,'PUT',url,{name:'Must not persist',codes:[],revision:max});assert.equal(fail.code,'CLIENT');assert.equal(await audits(),before);
+  assert.equal((await pool.query('SELECT draft_revision,name FROM permission_templates WHERE id=$1',[t.id])).rows[0].name,'Last valid revision');
+  const old=(await pool.query('SELECT revision FROM user_permission_profiles WHERE user_id=$1',[ids.target])).rows[0].revision;
+  try{
+   await pool.query('UPDATE user_permission_profiles SET revision=$2 WHERE user_id=$1',[ids.target,max-1]);
+   await expect(200,'PUT',company+'/users/'+ids.target+'/profile',{templateId:null,overrides:{},warehouseMode:'LIST',warehouseIds:[],revision:max-1});
+   const before=await audits();
+   await expect(409,'PUT',company+'/users/'+ids.target+'/profile',{templateId:null,overrides:{},warehouseMode:'LIST',warehouseIds:[],revision:max});
+   await expect(409,'PUT',company+'/users/'+ids.target+'/delegation',{enabled:true,grantableCodes:[code],password:testPassword});
+   assert.equal(await audits(),before);assert.equal((await pool.query('SELECT revision FROM user_permission_profiles WHERE user_id=$1',[ids.target])).rows[0].revision,max);
+  }finally{await pool.query('UPDATE user_permission_profiles SET revision=$2 WHERE user_id=$1',[ids.target,old]);}
+  await pool.query('INSERT INTO permission_template_versions(company_id,template_id,version,codes,published_by) VALUES($1,$2,$3,$4,$5)',[ids.company,t.id,max,[],ids.platform]);
+  await pool.query('UPDATE permission_templates SET published_version=$2 WHERE id=$1',[t.id,max]);
+  const preview=(await expect(200,'GET',company+'/templates/'+t.id+'/preview')).data.previewToken,prior=await audits();
+  await expect(409,'POST',company+'/templates/'+t.id+'/publish',{previewToken:preview});assert.equal(await audits(),prior);
+ });
  let failed=0;for(const [name,fn]of tests){try{await fn();console.log('PASS PostgreSQL '+name);}catch(e){failed++;console.error('FAIL '+name+'\n'+e.stack);}}
  assert.equal(await userSnapshot(),before);console.log(tests.length+' real PostgreSQL regression scenarios; '+failed+' failures; no production connection.');process.exitCode=failed?1:0;
 }

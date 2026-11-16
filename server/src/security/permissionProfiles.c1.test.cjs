@@ -264,4 +264,39 @@ test('publication succeeds inside the delegated ceiling and platform review can 
  assert.equal((await t.request('POST',company+'/templates/'+managerTemplate+'/publish',{previewToken:preview.previewToken},ids.manager)).statusCode,200);
  }finally{await t.a.app.close();}
 });
+
+test('revision validation rejects overflow, negative, fractional and nonnumeric values at API boundaries',async()=>{
+ const t=await setup();try{
+  const id=await createPublished(t),url=company+'/templates/'+id+'/draft';
+  for(const revision of [-1,0,1.5,2147483648,Number.MAX_SAFE_INTEGER,'1',null])assert.equal((await t.request('PUT',url,{name:'invalid',codes:[],revision})).statusCode,400);
+  for(const revision of [-1,1.5,2147483648,Number.MAX_SAFE_INTEGER,'0',null])assert.equal((await t.request('PUT',company+'/users/'+ids.target+'/profile',profileBody(id,{},revision))).statusCode,400);
+  assert.equal((await t.request('PUT',url,{name:'stale maximum',codes:[],revision:2147483647})).statusCode,409);
+  assert.equal((await t.request('PUT',company+'/users/'+ids.target+'/profile',profileBody(id,{},2147483647))).statusCode,409);
+  assert.equal((await t.request('PUT',company+'/users/'+ids.target+'/profile',profileBody(id,{},0))).statusCode,200);
+ }finally{await t.a.app.close();}
+});
+test('revision exhaustion returns409 without changing drafts, profiles, delegation or publication',async()=>{
+ const t=await setup();try{
+  const max=2147483647,id=await createPublished(t),url=company+'/templates/'+id+'/draft';
+  t.c.state.templates.get(id).draft_revision=max-1;
+  assert.equal((await t.request('PUT',url,{name:'last revision',codes:[],revision:max-1})).statusCode,200);
+  assert.equal(t.c.state.templates.get(id).draft_revision,max);
+  let before=structuredClone(t.c.state);
+  assert.equal((await t.request('PUT',url,{name:'overflow',codes:[],revision:max})).json().code,'CLIENT');assert.deepEqual(t.c.state,before);
+  assert.equal((await t.request('PUT',company+'/users/'+ids.target+'/profile',profileBody(id))).statusCode,200);
+  t.c.state.profiles.get(ids.target).revision=max-1;
+  assert.equal((await t.request('PUT',company+'/users/'+ids.target+'/profile',profileBody(id,{},max-1))).statusCode,200);
+  before=structuredClone(t.c.state);
+  const r=await t.request('PUT',company+'/users/'+ids.target+'/profile',profileBody(id,{},max));assert.equal(r.statusCode,409);assert.equal(r.json().code,'CLIENT');assert.deepEqual(t.c.state,before);
+  const d=await t.request('PUT',company+'/users/'+ids.target+'/delegation',{enabled:true,grantableCodes:['sales.view'],password:testPassword});assert.equal(d.statusCode,409);assert.deepEqual(t.c.state,before);
+  const row=t.c.state.templates.get(id);row.published_version=max;t.c.state.versions.set([ids.company,id,max].join(':'),{company_id:ids.company,template_id:id,version:max,codes:[],published_by:ids.platform});
+  const preview=(await t.request('GET',company+'/templates/'+id+'/preview')).json().data;before=structuredClone(t.c.state);
+  const published=await t.request('POST',company+'/templates/'+id+'/publish',{previewToken:preview.previewToken});assert.equal(published.statusCode,409);assert.equal(published.json().code,'CLIENT');assert.deepEqual(t.c.state,before);
+ }finally{await t.a.app.close();}
+});
+test('direct service revision validator never accepts nonfinite or out-of-range optimistic inputs',()=>{
+ const {validatePermissionRevision:check,PERMISSION_REVISION_MAX:max}=sourceLoader(createContext())('server/src/security/permissionRevision.ts');
+ for(const value of [-Infinity,Infinity,NaN,-1,0.1,max+1,'1',null,undefined])assert.throws(()=>check(value,0),e=>e.statusCode===400&&e.code==='INVALID_REVISION');
+ for(const value of [0,1,max-1,max])assert.doesNotThrow(()=>check(value,0));assert.throws(()=>check(0,1));
+});
 (async()=>{let failed=0;for(const[name,fn]of tests){try{await fn();console.log('PASS '+name);}catch(e){failed++;console.error('FAIL '+name+'\n'+e.stack);}}console.log(tests.length+' C1 targeted tests; '+failed+' failures. Synthetic SQL adapter, NOT PostgreSQL.');process.exitCode=failed?1:0;})();

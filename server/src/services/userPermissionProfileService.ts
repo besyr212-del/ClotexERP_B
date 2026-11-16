@@ -7,6 +7,8 @@ import { verifyCurrentUserPassword } from '../utils/reauthGuard.js';
 import { permissionCatalog, apiPolicies } from '../security/permissionPolicies.js';
 import { decideProfilePermission, permissionChanges, isKnownPermission, isPlatformPermission, type ProfileState, type Override } from '../security/profilePermissionEngine.js';
 
+import { validatePermissionRevision, requireRevisionCapacity } from '../security/permissionRevision.js';
+
 type ProfileRow = { user_id: string; company_id: string; template_id: string | null; overrides: Record<string, Override>; warehouse_mode: 'ALL'|'LIST'; warehouse_ids: string[]; permission_admin: boolean; grantable_codes: string[]; revision: number };
 type TemplateRow = { id: string; company_id: string; name: string; draft_codes: string[]; draft_revision: number; published_version: number; archived: boolean };
 const fail = (message: string, status=403, code='FORBIDDEN'): never => { throw new SecurityAccessError(message,status,code); };
@@ -108,8 +110,10 @@ export async function saveTemplateDraft(db:PoolClient,actor:LiveUserAuthorizatio
  withinDelegation(actor,d,codes);
  let saved:TemplateRow;
  if(input.id){
+  validatePermissionRevision(input.revision,1);
   const old=await template(db,companyId,input.id);if(old.archived)fail('لا يمكن تعديل قالب مؤرشف',409);
   withinDelegation(actor,d,old.draft_codes);withinDelegation(actor,d,await publishedCodes(db,old));
+  requireRevisionCapacity(old.draft_revision);
   const r=await db.query<TemplateRow>(`UPDATE permission_templates SET name=$3,draft_codes=$4,draft_revision=draft_revision+1,updated_by=$5,updated_at=now()
   WHERE id=$1 AND company_id=$2 AND draft_revision=$6 RETURNING *`,[input.id,companyId,input.name,codes,actor.id,input.revision]);
   saved=r.rows[0]??fail('المسودة تغيرت؛ أعد تحميلها',409,'STALE_DRAFT');
@@ -155,6 +159,7 @@ export async function publishTemplate(db:PoolClient,actor:LiveUserAuthorization,
  }
  // Cannot update your own effective profile through publishing a shared template.
  if(preview.impacted.some(u=>u.userId===actor.id&&u.changes.length))fail('نشر هذا الإصدار يغيّر صلاحياتك؛ يلزم مسؤول مفوض آخر',403,'SELF_MODIFICATION');
+ requireRevisionCapacity(t.published_version);
  await db.query(`INSERT INTO permission_template_versions(company_id,template_id,version,codes,published_by) VALUES($1,$2,$3,$4,$5)`,[companyId,id,t.published_version+1,t.draft_codes,actor.id]);
  await db.query('UPDATE permission_templates SET published_version=published_version+1,updated_by=$3,updated_at=now() WHERE company_id=$1 AND id=$2',[companyId,id,actor.id]);
  await audit(db,actor.id,companyId,'TEMPLATE_PUBLISHED',id,{version:t.published_version+1,previewToken,impacted:preview.impacted});
@@ -178,10 +183,12 @@ export async function setDefaultTemplate(db:PoolClient,actor:LiveUserAuthorizati
 }
 
 export async function updateUserProfile(db:PoolClient,actor:LiveUserAuthorization,d:ProfileRow|undefined,companyId:string,userId:string,input:{templateId:string|null;overrides:Record<string,Override>;warehouseMode:'ALL'|'LIST';warehouseIds:string[];revision:number}) {
+ validatePermissionRevision(input.revision,0);
  if(userId===actor.id)fail('لا يمكن تعديل ملف صلاحياتك بنفسك',403,'SELF_MODIFICATION');
  const old=await state(db,companyId,userId);
  if(old.user.is_platform_admin&&!actor.is_platform_admin)fail('حساب المنصة خارج نطاق إدارة الشركة');
  if((old.p?.revision??0)!==input.revision)fail('ملف المستخدم تغير؛ أعد تحميله',409,'STALE_PROFILE');
+ requireRevisionCapacity(old.p?.revision??0);
  const codes:string[]=[];
  if(input.templateId){const t=await template(db,companyId,input.templateId);if(t.archived||!t.published_version)fail('القالب غير منشور أو مؤرشف',409);codes.push(...await publishedCodes(db,t));}
  // Removing a privilege also requires authority over the previous value.
@@ -209,6 +216,7 @@ export async function setPermissionDelegation(db:PoolClient,actor:LiveUserAuthor
  await verifyCurrentUserPassword(db,actor.id,input.password);
  const user=await userInCompany(db,companyId,userId);if(!user.is_active||user.is_platform_admin)fail('يجب اختيار حساب شركة فعال غير تابع للمنصة',409);
  const existing=await rowProfile(db,userId);if(existing&&existing.company_id!==companyId)fail('ملف الصلاحيات لا يطابق شركة المستخدم',409);
+ requireRevisionCapacity(existing?.revision??0);
  validateCodes(input.grantableCodes);
  if(input.enabled&&!input.grantableCodes.length)fail('حدد صلاحية واحدة على الأقل ضمن تفويض المنح',400,'EMPTY_DELEGATION');
  if(!input.enabled){
