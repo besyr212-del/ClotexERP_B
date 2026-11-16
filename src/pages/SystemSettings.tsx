@@ -1,3 +1,4 @@
+import { PlatformBackupDownloadPanel } from '../components/settings/PlatformBackupDownloadPanel';
 import React, { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import {
@@ -7,7 +8,6 @@ import {
   ShieldCheck,
   Mail,
   Database,
-  Download,
   Save,
   Sparkles,
   AlertTriangle,
@@ -31,7 +31,6 @@ import { ActivationSettingsPanel } from '../components/activation/ActivationSett
 import { DesktopSettingsBody } from './settings/DesktopSettings';
 import {
   createSystemUser,
-  downloadDatabaseBackupToDevice,
   fetchTelegramUpdates,
   getPermissionsOverview,
   getSystemSettings,
@@ -142,6 +141,7 @@ export const SystemSettings = () => {
   const [usersLoading, setUsersLoading] = useState(false);
   const [editingUser, setEditingUser] = useState<ApiUser | null>(null);
   const [editUserForm, setEditUserForm] = useState({
+    currentPassword: '',
     username: '',
     fullName: '',
     password: '',
@@ -163,7 +163,6 @@ export const SystemSettings = () => {
   const [purgeConfirmPhrase, setPurgeConfirmPhrase] = useState('');
   const [purgePassword, setPurgePassword] = useState('');
   const [purgeLoading, setPurgeLoading] = useState(false);
-  const [backupDownloadLoading, setBackupDownloadLoading] = useState(false);
 
   // Sync active tab when URL ?tab= changes (e.g., redirected from /settings/desktop)
   useEffect(() => {
@@ -277,25 +276,6 @@ export const SystemSettings = () => {
       showToast({ type: 'error', message: e instanceof Error ? e.message : t('toast.purgeFailed') });
     } finally {
       setPurgeLoading(false);
-    }
-  };
-
-  const handleDownloadBackupToDevice = async () => {
-    setBackupDownloadLoading(true);
-    try {
-      const result = await downloadDatabaseBackupToDevice();
-      const sizeMb = (result.sizeBytes / (1024 * 1024)).toFixed(2);
-      showToast({
-        type: 'success',
-        message: t('toast.backupDownloaded', { fileName: result.fileName, sizeMb }),
-      });
-    } catch (e) {
-      showToast({
-        type: 'error',
-        message: e instanceof Error ? e.message : t('toast.backupFailed'),
-      });
-    } finally {
-      setBackupDownloadLoading(false);
     }
   };
 
@@ -440,6 +420,7 @@ export const SystemSettings = () => {
   const openEditUser = (user: ApiUser) => {
     setEditingUser(user);
     setEditUserForm({
+      currentPassword: '',
       username: user.username,
       fullName: user.full_name || '',
       password: '',
@@ -451,12 +432,19 @@ export const SystemSettings = () => {
   };
 
   const closeEditUser = () => {
+    setEditUserForm((form) => ({ ...form, password: '', currentPassword: '' }));
     setEditingUser(null);
     setEditUserError('');
   };
 
   const handleUpdateUser = async () => {
     if (!editingUser || !editUserForm.username.trim()) return;
+    const currentPassword = editUserForm.currentPassword;
+    if ((currentUser?.isPlatformAdmin || (editingUser.id === currentUser?.id && !!editUserForm.password)) && !currentPassword) {
+      setEditUserError(t('users.currentPasswordRequired'));
+      return;
+    }
+    setEditUserForm((form) => ({ ...form, currentPassword: '' }));
     setEditUserSaving(true);
     setEditUserError('');
     try {
@@ -467,6 +455,7 @@ export const SystemSettings = () => {
         isActive: editUserForm.isActive,
         notes: editUserForm.notes.trim(),
         ...(editUserForm.password.trim() ? { password: editUserForm.password } : {}),
+        ...(currentPassword ? { currentPassword } : {}),
       });
       setUsers((current) => current.map((user) => (user.id === updated.id ? updated : user)));
       showToast({ message: t('toast.userUpdated'), type: 'success' });
@@ -764,27 +753,7 @@ export const SystemSettings = () => {
                 ]}
               />
 
-              <div className="bg-[var(--surface-header)] border border-[var(--border-default)] rounded-xl shadow-sm p-6 space-y-4">
-                <div className="flex items-start gap-3">
-                  <Download className="w-6 h-6 text-[var(--ui-accent)] shrink-0 mt-0.5" />
-                  <div>
-                    <h3 className="text-xl font-bold text-[var(--text-heading)]">{t('backup.manualTitle')}</h3>
-                    <p className="text-sm text-[var(--text-muted)] mt-2 leading-relaxed">
-                      {t('backup.manualBody')}
-
-                    </p>
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  disabled={backupDownloadLoading}
-                  onClick={() => void handleDownloadBackupToDevice()}
-                  className="inline-flex items-center justify-center gap-2 bg-[var(--ui-accent)] text-white px-5 py-2.5 rounded-lg font-bold hover:opacity-95 disabled:opacity-50 disabled:cursor-not-allowed transition"
-                >
-                  <Download className="w-4 h-4" />
-                  {backupDownloadLoading ? t('backup.downloading') : t('backup.downloadNow')}
-                </button>
-              </div>
+              <PlatformBackupDownloadPanel />
 
               {currentUser?.role === 'admin' && (
                 <div className="bg-[var(--surface-header)] border-2 border-red-300 dark:border-red-800 rounded-xl shadow-sm p-6 space-y-5">
@@ -1331,6 +1300,16 @@ export const SystemSettings = () => {
                 value={editUserForm.password}
                 onChange={(e) => setEditUserForm({ ...editUserForm, password: e.target.value })}
               />
+              {(currentUser?.isPlatformAdmin || (editingUser.id === currentUser?.id && !!editUserForm.password)) && (
+                <label className="block text-sm">
+                  {t('users.currentPasswordLabel')}
+                  <input type="password" autoComplete="current-password" maxLength={1024}
+                    value={editUserForm.currentPassword}
+                    onChange={(e) => setEditUserForm({ ...editUserForm, currentPassword: e.target.value })}
+                    className="mt-1 w-full rounded-lg border border-[var(--border)] bg-[var(--surface)] p-2" />
+                  <span className="block text-xs text-[var(--text-muted)]">{t('users.currentPasswordHint')}</span>
+                </label>
+              )}
               <select
                 className={`w-full p-2.5 bg-[var(--surface-header)] border border-[var(--border-default)] rounded-lg ${ringCls}`}
                 value={editUserForm.role}

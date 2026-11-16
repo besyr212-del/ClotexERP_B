@@ -5,6 +5,34 @@ import i18n from '../../i18n/config';
 import { translateManufacturingMessage } from '../externalManufacturingI18n';
 
 const TOKEN_KEY = 'fabric_erp_api_token';
+const AUTH_EPOCH_KEY = 'fabric_erp_auth_epoch';
+export const AUTH_SESSION_CHANGED = 'clotex-auth-session-changed';
+let authSessionRevision = 0;
+let authStorageBlocked = false;
+/** Opaque change marker, not a grant or identity. Read storage on EVERY comparison:
+ * null -> account B -> null in another tab must not look like an unchanged session. */
+export function getAuthSessionRevision(): string {
+  try { return `${authSessionRevision}:${getTokenStorage()?.getItem(AUTH_EPOCH_KEY) ?? ''}`; }
+  catch { return `${authSessionRevision}:unavailable`; }
+}
+
+// Also invalidate requests from older tabs that only mutate the legacy token key.
+// This lives in the HTTP module, including on /login where RequireAuth is unmounted.
+if (typeof window !== 'undefined') {
+  window.addEventListener('storage', (event: StorageEvent) => {
+    if ((event.key === null || event.key === TOKEN_KEY || event.key === AUTH_EPOCH_KEY) &&
+        (!event.storageArea || event.storageArea === getTokenStorage())) authSessionRevision++;
+  });
+}
+
+/** Serialize cooperating WEB tabs' check-and-commit transitions when Web Locks exist.
+ * Electron keeps its existing per-window sessionStorage; no cross-window token sharing. */
+export async function withAuthSessionLock<T>(change: () => T): Promise<T> {
+  if (!isElectronRuntime() && typeof navigator !== 'undefined' && navigator.locks) {
+    return navigator.locks.request('clotex-auth-session-transition', change);
+  }
+  return change();
+}
 
 /**
  * LocalStorage key for user-configured API URL (Electron desktop settings page).
@@ -175,6 +203,7 @@ if (typeof window !== 'undefined' && isElectronRuntime()) {
 }
 
 export function getStoredToken(): string | null {
+  if (authStorageBlocked) return null;
   try {
     return getTokenStorage()?.getItem(TOKEN_KEY) ?? null;
   } catch {
@@ -182,18 +211,36 @@ export function getStoredToken(): string | null {
   }
 }
 
-export function setStoredToken(token: string | null): void {
+export function setStoredToken(token: string | null): boolean {
+  authSessionRevision++;
+  let saved = false;
+  let storage: Storage | null = null;
+  let epoch: string | null = null;
   try {
-    const storage = getTokenStorage();
-    if (!storage) return;
+    storage = getTokenStorage();
+    if (!storage) throw new Error('session_storage_unavailable');
+    epoch = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID() : `${Date.now()}:${Math.random()}:${authSessionRevision}:${Math.random()}`;
+    // Persist intent BEFORE changing the token, including logout and failed/new login.
+    storage.setItem(AUTH_EPOCH_KEY, epoch);
+    if (storage.getItem(AUTH_EPOCH_KEY) !== epoch) throw new Error('session_epoch_not_saved');
     if (token) {
       storage.setItem(TOKEN_KEY, token);
     } else {
       storage.removeItem(TOKEN_KEY);
     }
+    if (storage.getItem(AUTH_EPOCH_KEY) !== epoch || storage.getItem(TOKEN_KEY) !== token) throw new Error('session_token_not_saved');
+    authStorageBlocked = false;
+    saved = true;
   } catch {
-    /* ignore */
+    authStorageBlocked = true;
+    // Invalidate only our own marker. Never erase another tab's token on failure.
+    try { if (epoch && storage?.getItem(AUTH_EPOCH_KEY) === epoch) storage.removeItem(AUTH_EPOCH_KEY); } catch { /* storage denied */ }
   }
+  if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
+    window.dispatchEvent(new Event(AUTH_SESSION_CHANGED));
+  }
+  return saved;
 }
 
 export type ApiErrorBody = {
@@ -232,6 +279,13 @@ export async function apiFetch<T>(
   }
 
   const headers = new Headers(options.headers);
+  const requestToken = getStoredToken();
+  const requestRevision = getAuthSessionRevision();
+  const assertSameSession = () => {
+    if (!options.skipAuth && (requestToken !== getStoredToken() || requestRevision !== getAuthSessionRevision())) {
+      throw new ApiRequestError('تغيرت جلسة المستخدم؛ أعد الطلب من الحساب الحالي.', 409, { code: 'SESSION_CHANGED' });
+    }
+  };
   if (!headers.has('Content-Type') && options.body && !(options.body instanceof FormData)) {
     headers.set('Content-Type', 'application/json; charset=utf-8');
   }
@@ -279,6 +333,7 @@ export async function apiFetch<T>(
   }
 
   const contentType = response.headers.get('content-type') || '';
+  assertSameSession();
   const isJson = contentType.includes('application/json');
 
   let data: unknown = null;
@@ -290,6 +345,7 @@ export async function apiFetch<T>(
     }
   }
 
+  assertSameSession();
   if (!response.ok) {
     const body = data as ApiErrorBody | undefined;
     const msg =
@@ -304,8 +360,10 @@ export async function apiFetch<T>(
     // back to /login. Skip when the caller explicitly opted out of auth
     // (e.g. the login request itself), to avoid clobbering the form.
     if (response.status === 401 && !options.skipAuth) {
-      setStoredToken(null);
-      if (typeof window !== 'undefined' && !window.location.pathname.endsWith('/login') && !window.location.hash.endsWith('/login')) {
+      const invalidatedRevision = await withAuthSessionLock(() => {
+        assertSameSession(); setStoredToken(null); return getAuthSessionRevision();
+      });
+      if (invalidatedRevision === getAuthSessionRevision() && !getStoredToken() && typeof window !== 'undefined' && !window.location.pathname.endsWith('/login') && !window.location.hash.endsWith('/login')) {
         const target = isElectronRuntime() ? '#/login' : '/login';
         window.location.assign(target);
       }

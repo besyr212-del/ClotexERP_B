@@ -1,6 +1,6 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { Navigate, useLocation } from 'react-router-dom';
-import { getStoredToken } from '../lib/api/client';
+import { getStoredToken, AUTH_SESSION_CHANGED } from '../lib/api/client';
 
 /**
  * Route guard.
@@ -12,7 +12,21 @@ import { getStoredToken } from '../lib/api/client';
  *    can send the user back to where they were after a successful sign-in.
  */
 export const RequireAuth: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const token = getStoredToken();
+  const [session, setSession] = useState(() => ({ token: getStoredToken(), revision: 0 }));
+  useEffect(() => {
+    const reset = () => setSession(previous => ({ token: getStoredToken(), revision: previous.revision + 1 }));
+    const changedInTab = (event: StorageEvent) => {
+      if (event.key === null || event.key === 'fabric_erp_api_token') reset();
+    };
+    window.addEventListener(AUTH_SESSION_CHANGED, reset);
+    window.addEventListener('storage', changedInTab);
+    if (getStoredToken() !== session.token) reset();
+    return () => {
+      window.removeEventListener(AUTH_SESSION_CHANGED, reset);
+      window.removeEventListener('storage', changedInTab);
+    };
+  }, []);
+  const token = session.token;
   const location = useLocation();
 
   if (!token) {
@@ -21,5 +35,5 @@ export const RequireAuth: React.FC<{ children: React.ReactNode }> = ({ children 
     return <Navigate to={target} replace />;
   }
 
-  return <>{children}</>;
+  return <React.Fragment key={session.revision}>{children}</React.Fragment>;
 };

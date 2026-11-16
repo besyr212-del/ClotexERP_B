@@ -51,6 +51,8 @@ import { documentPdfRoutes } from './routes/documentPdfRoutes.js';
 import { customerDiscountRoutes } from './routes/customerDiscountRoutes.js';
 import { operatingExpenseRoutes } from './routes/operatingExpenseRoutes.js';
 import { aiRoutes } from './routes/aiRoutes.js';
+import { installPermissionShadowAudit } from './security/permissionShadowAudit.js';
+import { permissionProfileRoutes } from './routes/permissionProfileRoutes.js';
 
 export async function buildApp() {
   const app = Fastify({
@@ -81,6 +83,7 @@ export async function buildApp() {
   });
 
   app.setErrorHandler(globalErrorHandler);
+  installPermissionShadowAudit(app);
 
   app.addHook('onRequest', async (request, reply) => {
     if (!getEnv().ACTIVATION_REQUIRE_ACTIVE) return;
@@ -117,6 +120,7 @@ export async function buildApp() {
 
   await app.register(healthRoutes, { prefix: '/api' });
   await app.register(systemRoutes, { prefix: '/api/system' });
+  await app.register(permissionProfileRoutes, { prefix: '/api/permission-profiles' });
   await app.register(telegramRoutes, { prefix: '/api/telegram' });
   await app.register(activationRoutes, { prefix: '/api/activation' });
   await app.register(authRoutes, { prefix: '/api/auth' });

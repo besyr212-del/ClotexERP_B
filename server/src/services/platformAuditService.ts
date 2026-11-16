@@ -1,7 +1,5 @@
 import type { Pool, PoolClient } from 'pg';
-
-export type PlatformAuditAction = 'SWITCH_COMPANY' | 'CREATE_COMPANY' | 'UPDATE_COMPANY' | 'CREATE_USER_IN_OTHER_COMPANY';
-
+export type PlatformAuditAction = 'SWITCH_COMPANY' | 'CREATE_COMPANY' | 'UPDATE_COMPANY' | 'CREATE_USER_IN_OTHER_COMPANY' | 'UPDATE_USER_IN_OTHER_COMPANY' | 'UPDATE_ROLE_PERMISSIONS' | 'FULL_BACKUP_ATTEMPT' | 'FULL_BACKUP_DENIED' | 'FULL_BACKUP_AUTHORIZED' | 'FULL_BACKUP_READY' | 'FULL_BACKUP_FAILED';
 export type PlatformAuditEntry = {
   actorUserId: string;
   action: PlatformAuditAction;
@@ -11,13 +9,10 @@ export type PlatformAuditEntry = {
   userAgent?: string | null;
   details?: Record<string, unknown> | null;
 };
-
 export async function logPlatformAction(db: Pool | PoolClient, entry: PlatformAuditEntry): Promise<void> {
-  await db.query(
-    `INSERT INTO platform_audit_log
+    await db.query(`INSERT INTO platform_audit_log
        (actor_user_id, action, from_company_id, to_company_id, ip, user_agent, details)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-    [
+     VALUES ($1, $2, $3, $4, $5, $6, $7)`, [
       entry.actorUserId,
       entry.action,
       entry.fromCompanyId ?? null,
@@ -25,6 +20,5 @@ export async function logPlatformAction(db: Pool | PoolClient, entry: PlatformAu
       entry.ip ?? null,
       entry.userAgent ?? null,
       entry.details ? JSON.stringify(entry.details) : null,
-    ],
-  );
+    ]);
 }
